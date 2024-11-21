@@ -1,0 +1,16 @@
+{
+  "name": "telegram-hub",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "start": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^3.86.1"
+  },
+  "dependencies": {
+    "xmldom": "^0.6.0"
+  }
+}

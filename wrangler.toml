@@ -1,0 +1,24 @@
+name = "telegram-hub"
+main = "src/index.js"
+compatibility_date = "2024-11-11"
+
+# Cron Triggers
+# Docs: https://developers.cloudflare.com/workers/platform/triggers/cron-triggers/
+# Configuration: https://developers.cloudflare.com/workers/wrangler/configuration/#triggers
+[triggers]
+crons = [
+  "* * * * *",    # 每分钟执行 handleRSSUpdate
+  "0 4 * * *"     # 每天凌晨 4 点执行 cleanOldDataBySource
+]
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[[d1_databases]]
+binding = "DB"
+database_name = "rss"
+database_id = "<your-data-id>"
+
+[vars]
+TELEGRAM_BOT_TOKEN = "<your-telegram-bot-token>"

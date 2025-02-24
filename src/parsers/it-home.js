@@ -12,7 +12,7 @@ export function itHomeParser(content) {
                 ...item,
                 description: processedDescription,
                 message: formatMessage(
-                    XMLParser.escapeHTML(item.title),
+                    item.title,
                     processedDescription,
                     item.link
                 )

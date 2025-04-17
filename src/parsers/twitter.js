@@ -13,7 +13,8 @@ export function twitterParser(content) {
                 description: processedDescription,
                 message: formatMessage(
                     item.title,
-                    item.link
+                    item.link,
+                    item['dc:creator'] || ''
                 )
             };
         });
@@ -37,6 +38,6 @@ function processDescription(description) {
 }
 
 
-function formatMessage(title, link) {
-    return `${title}\n\n<a href="${link}">原始推文</a>`;
+function formatMessage(title, link, username) {
+    return `${title}\n\n ${username}: ${link}`;
 }

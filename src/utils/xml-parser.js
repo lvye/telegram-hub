@@ -10,6 +10,8 @@ export class XMLParser {
                 const itemContent = match[1];
                 const baseItem = this.parseBaseItem(itemContent);
                 if (baseItem) {
+                    // 保存原始内容以便后续解析
+                    baseItem.rawContent = itemContent;
                     items.push(baseItem);
                 }
             }
@@ -38,9 +40,25 @@ export class XMLParser {
 
     // 提取标签内容
     static getTagContent(text, tag) {
-        const regex = new RegExp(`<${tag}[^>]*>(.*?)<\/${tag}>`, 's');
-        const match = text.match(regex);
-        return match ? match[1].trim() : '';
+        // 首先尝试精确匹配
+        let regex = new RegExp(`<${tag}[^>]*>(.*?)<\/${tag}>`, 's');
+        let match = text.match(regex);
+
+        if (match) {
+            return match[1].trim();
+        }
+
+        // 如果是命名空间标签，尝试匹配任何命名空间
+        if (tag.includes(':')) {
+            const tagName = tag.split(':')[1];
+            regex = new RegExp(`<[^:]*:${tagName}[^>]*>(.*?)<\/[^:]*:${tagName}>`, 's');
+            match = text.match(regex);
+            if (match) {
+                return match[1].trim();
+            }
+        }
+
+        return '';
     }
 
     // 解析日期

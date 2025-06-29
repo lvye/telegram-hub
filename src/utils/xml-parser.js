@@ -38,7 +38,7 @@ export class XMLParser {
         };
     }
 
-    // 提取标签内容
+    // 提取标签内容 - 改进版本，支持命名空间
     static getTagContent(text, tag) {
         // 首先尝试精确匹配
         let regex = new RegExp(`<${tag}[^>]*>(.*?)<\/${tag}>`, 's');
@@ -108,5 +108,20 @@ export class XMLParser {
 
     static removeCDATA(text) {
         return text.replace(/<!\[CDATA\[(.*?)\]\]>/gs, '$1');
+    }
+
+    static parseAttributes(attributeString) {
+        const attributes = {};
+        if (!attributeString) return attributes;
+
+        // 匹配 key="value" 或 key='value' 格式
+        const regex = /(\w+)\s*=\s*(['"])(.*?)\2/g;
+
+        let match;
+        while ((match = regex.exec(attributeString)) !== null) {
+            attributes[match[1]] = match[3];
+        }
+
+        return attributes;
     }
 }

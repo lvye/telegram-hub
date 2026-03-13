@@ -1,6 +1,6 @@
 import { getConfig } from './config';
-import { handleRSSUpdate } from './handlers/rss';
-import { handleCleanupTask } from './handlers/cleanup';
+import { handleRSSUpdate } from './handler/rss';
+import { handleCleanupTask } from './handler/cleanup';
 import { Logger } from './utils/logger';
 import { handleError } from './utils/error-handler';
 

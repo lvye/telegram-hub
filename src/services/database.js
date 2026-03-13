@@ -1,4 +1,3 @@
-import { config } from '../config';
 import { Logger } from '../utils/logger';
 import { CustomError } from '../utils/error-handler';
 

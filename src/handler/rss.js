@@ -1,4 +1,4 @@
-import { config } from '../config';
+import { getConfig } from '../config';
 import { getParser } from '../parsers';
 import { TelegramClient } from '../services/telegram';
 import { DatabaseService } from '../services/database';
@@ -6,6 +6,7 @@ import { Logger } from '../utils/logger';
 import { handleError, CustomError } from '../utils/error-handler';
 
 export async function handleRSSUpdate(env) {
+    const config = getConfig(env);
     const { TELEGRAM_BOT_TOKEN, DB } = env;
     const telegramClient = new TelegramClient(TELEGRAM_BOT_TOKEN, config.telegram);
     const dbService = new DatabaseService(DB);
@@ -17,7 +18,7 @@ export async function handleRSSUpdate(env) {
             const items = parser(feed);
             const newItems = await filterNewItems(dbService, items, source);
 
-            await processNewItems(telegramClient, dbService, source, newItems);
+            await processNewItems(telegramClient, dbService, source, newItems, config);
 
             Logger.info(`Successfully processed source: ${source.name}`, {
                 itemCount: newItems.length
@@ -54,7 +55,7 @@ async function filterNewItems(dbService, items, source) {
         .sort((a, b) => new Date(a.pubDate) - new Date(b.pubDate));
 }
 
-async function processNewItems(telegramClient, dbService, source, items) {
+async function processNewItems(telegramClient, dbService, source, items, config) {
     for (const item of items) {
         try {
             if (item.image) {
@@ -99,7 +100,7 @@ async function processNewItems(telegramClient, dbService, source, items) {
 }
 
 // 批量处理
-async function processNewItemsBatch(telegramClient, dbService, source, items) {
+async function processNewItemsBatch(telegramClient, dbService, source, items, config) {
     if (items.length > 0) {
         try {
             await dbService.saveItemsBatch(items, source.name);

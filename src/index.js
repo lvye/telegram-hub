@@ -1,4 +1,4 @@
-import { config } from './config';
+import { getConfig } from './config';
 import { handleRSSUpdate } from './handlers/rss';
 import { handleCleanupTask } from './handlers/cleanup';
 import { Logger } from './utils/logger';
@@ -6,9 +6,10 @@ import { handleError } from './utils/error-handler';
 
 export default {
 	async scheduled(event, env, ctx) {
+		const config = getConfig(env);
 		const now = new Date(event.scheduledTime);
 
-		if (isDailyCleanTask(now)) {
+		if (isDailyCleanTask(now, config)) {
 			Logger.info('Starting daily cleanup task');
 			ctx.waitUntil(handleCleanupTask(env));
 		} else {
@@ -26,7 +27,7 @@ export default {
 	}
 };
 
-function isDailyCleanTask(now) {
+function isDailyCleanTask(now, config) {
 	return now.getUTCHours() === config.rss.cleanupTime &&
 		now.getUTCMinutes() === 0;
 }

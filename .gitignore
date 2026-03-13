@@ -170,3 +170,7 @@ dist
 
 .dev.vars
 .wrangler/
+
+# Sensitive / local overrides
+*prod*
+*backup*

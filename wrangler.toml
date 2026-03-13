@@ -18,7 +18,4 @@ head_sampling_rate = 1
 [[d1_databases]]
 binding = "DB"
 database_name = "rss"
-database_id = "<your-data-id>"
-
-[vars]
-TELEGRAM_BOT_TOKEN = "<your-telegram-bot-token>"
+database_id = "<your-database-id>"

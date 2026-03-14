@@ -1,8 +1,14 @@
 import { getConfig } from './config';
-import { handleRSSUpdate } from './handler/rss';
-import { handleCleanupTask } from './handler/cleanup';
+import { handleRSSSources } from './handlers/rss';
+import { handleCleanupTask } from './handlers/cleanup';
+import { TelegramClient } from './services/telegram';
+import { DatabaseService } from './services/database';
 import { Logger } from './utils/logger';
 import { handleError } from './utils/error-handler';
+
+const handlers = {
+	rss: handleRSSSources,
+};
 
 export default {
 	async scheduled(event, env, ctx) {
@@ -13,8 +19,8 @@ export default {
 			Logger.info('Starting daily cleanup task');
 			ctx.waitUntil(handleCleanupTask(env));
 		} else {
-			Logger.info('Starting RSS update task');
-			ctx.waitUntil(handleRSSUpdate(env));
+			Logger.info('Starting source update task');
+			ctx.waitUntil(handleSources(env, config));
 		}
 	},
 
@@ -28,19 +34,38 @@ export default {
 };
 
 function isDailyCleanTask(now, config) {
-	return now.getUTCHours() === config.rss.cleanupTime &&
+	return now.getUTCHours() === config.cleanup.hour &&
 		now.getUTCMinutes() === 0;
+}
+
+async function handleSources(env, config) {
+	const telegramClient = new TelegramClient(env.TELEGRAM_BOT_TOKEN, config.telegram);
+	const dbService = new DatabaseService(env.DB);
+	const ctx = { telegramClient, dbService, config };
+
+	const grouped = Object.groupBy(config.sources, s => s.type);
+	const tasks = Object.entries(grouped).map(([type, sources]) => {
+		const handler = handlers[type];
+		if (!handler) {
+			Logger.error(`Unknown source type: ${type}`);
+			return;
+		}
+		return handler(sources, ctx);
+	});
+
+	await Promise.all(tasks);
 }
 
 async function handleTestRequest(env) {
 	try {
-		await handleRSSUpdate(env);
-		return new Response("RSS update test completed successfully", {
+		const config = getConfig(env);
+		await handleSources(env, config);
+		return new Response("Source update test completed successfully", {
 			status: 200
 		});
 	} catch (error) {
 		handleError(error, 'Test request');
-		return new Response("Error during RSS update test", {
+		return new Response("Error during source update test", {
 			status: 500
 		});
 	}

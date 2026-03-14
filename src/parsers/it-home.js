@@ -1,4 +1,5 @@
 import { XMLParser } from '../utils/xml-parser';
+import { decodeHtmlEntities, truncateText } from '../utils/text';
 import { CustomError } from '../utils/error-handler';
 
 export function itHomeParser(content) {
@@ -30,7 +31,7 @@ export function itHomeParser(content) {
 function processDescription(description) {
     if (!description) return '';
 
-    let processed = XMLParser.decodeHtmlEntities(description);
+    let processed = decodeHtmlEntities(description);
 
     // IT之家特定的处理
     processed = processed.replace(/IT之家\s\d+\s月\s\d+\s日消息，/g, '');
@@ -57,7 +58,7 @@ function processDescription(description) {
     processed = processed.replace(/\n{3,}/g, '\n\n').trim(); // 确保最多两行间隔
 
     // 限制长度
-    return XMLParser.truncateText(processed, 400);
+    return truncateText(processed, 400);
 }
 
 function formatTable(tableContent) {

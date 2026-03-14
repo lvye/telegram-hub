@@ -1,4 +1,5 @@
 import { XMLParser } from '../utils/xml-parser';
+import { decodeHtmlEntities, cleanText, truncateText } from '../utils/text';
 import { CustomError } from '../utils/error-handler';
 import { Logger } from '../utils/logger';
 
@@ -56,7 +57,7 @@ function validateAndCleanImageUrl(url, itemGuid) {
 
     try {
         // 解码 HTML 实体
-        let cleanUrl = XMLParser.decodeHtmlEntities(url);
+        let cleanUrl = decodeHtmlEntities(url);
 
         // 移除可能的前后空白字符
         cleanUrl = cleanUrl.trim();
@@ -150,11 +151,11 @@ function extractUsername(itemContent) {
 function processDescription(description) {
     if (!description) return '';
 
-    let processed = XMLParser.decodeHtmlEntities(description);
+    let processed = decodeHtmlEntities(description);
     processed = processed.replace(/<[^>]+>/g, '');
-    processed = XMLParser.cleanText(processed);
+    processed = cleanText(processed);
 
-    return XMLParser.truncateText(processed, 400);
+    return truncateText(processed, 400);
 }
 
 function formatMessage(title, link, username) {

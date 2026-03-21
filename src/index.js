@@ -17,7 +17,7 @@ export default {
 
 		if (isDailyCleanTask(now, config)) {
 			Logger.info('Starting daily cleanup task');
-			ctx.waitUntil(handleCleanupTask(env));
+			ctx.waitUntil(handleCleanupTask(env, config));
 		} else {
 			Logger.info('Starting source update task');
 			ctx.waitUntil(handleSources(env, config));

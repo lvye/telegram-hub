@@ -28,6 +28,7 @@ export function getConfig(env) {
 		},
 		cleanup: {
 			hour: 4,
+			retentionDays: 30,
 		},
 	};
 }

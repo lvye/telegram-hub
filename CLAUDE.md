@@ -25,7 +25,7 @@ There are no tests or lint commands configured.
 
 **Entry point:** `src/index.js` — Cloudflare Worker with `scheduled()` (cron) and `fetch()` (HTTP) handlers.
 
-**Cron flow:** Every minute triggers `handleRSSUpdate` → iterates configured sources → fetches feed → parses with source-specific parser → filters new items via DB → sends to Telegram → saves to DB. Daily cleanup deletes old records.
+**Cron flow:** Every minute triggers source processing → iterates configured sources → fetches feed → parses with source-specific parser → filters candidate items → atomically claims each item in D1 → sends to Telegram → marks delivery state. Daily cleanup removes expired records.
 
 **Key modules:**
 - `src/config/index.js` — RSS sources array (name, url, parser type, chatId, parseMode) and operational settings
@@ -36,7 +36,7 @@ There are no tests or lint commands configured.
 - `src/services/database.js` — DatabaseService wrapping D1 queries
 - `src/utils/xml-parser.js` — Regex-based XML parsing (not DOM-based), handles CDATA and namespaced tags
 
-**Database:** Single `pushed_items` table (id, title, description, link, pubDate, source). Schema in `migrations/0001_initial_schema.sql`.
+**Database:** Single `pushed_items` table with delivery state fields (`status`, `createdAt`, `updatedAt`, `sentAt`, `lastError`). Consolidated schema in `migrations/schema.sql`; incremental changes are tracked in `migrations/*.sql`.
 
 **Environment variables:** `TELEGRAM_BOT_TOKEN` (secret), `DB` (D1 binding) — configured in `wrangler.toml`.
 

@@ -1,5 +1,5 @@
 // HTML 实体解码
-export function decodeHtmlEntities(text) {
+export function decodeHtmlEntities(text: string): string {
 	return text
 		.replace(/&amp;/g, '&')
 		.replace(/&lt;/g, '<')
@@ -10,7 +10,7 @@ export function decodeHtmlEntities(text) {
 }
 
 // 转义 HTML 特殊字符
-export function escapeHTML(text) {
+export function escapeHTML(text: string): string {
 	return text
 		.replace(/&/g, '&amp;')
 		.replace(/</g, '&lt;')
@@ -18,7 +18,7 @@ export function escapeHTML(text) {
 }
 
 // 清理文本
-export function cleanText(text) {
+export function cleanText(text: string): string {
 	return text
 		.replace(/\s+/g, ' ')
 		.replace(/\n\s*\n/g, '\n')
@@ -26,7 +26,7 @@ export function cleanText(text) {
 }
 
 // 截断文本
-export function truncateText(text, maxLength) {
+export function truncateText(text: string, maxLength: number): string {
 	if (text.length <= maxLength) return text;
 
 	const truncated = text.substring(0, maxLength);

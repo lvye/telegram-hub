@@ -1,17 +1,30 @@
 name = "telegram-hub"
-main = "src/index.js"
-compatibility_date = "2025-05-05"
+main = "src/worker.ts"
+compatibility_date = "2026-07-10"
+upload_source_maps = true
+
+[secrets]
+required = [
+  "TELEGRAM_BOT_TOKEN",
+  "IT_HOME_CHAT_ID",
+  "TWITTER_CHAT_ID",
+  "TWITTER_RSS_URL"
+]
 
 # Cron Triggers
 # Docs: https://developers.cloudflare.com/workers/platform/triggers/cron-triggers/
 # Configuration: https://developers.cloudflare.com/workers/wrangler/configuration/#triggers
 [triggers]
 crons = [
-  "* * * * *",    # 每分钟执行 handleRSSUpdate
-  "0 4 * * *"     # 每天凌晨 4 点执行 cleanOldDataBySource
+  "* * * * *",    # 每分钟抓取 Feed 并分发 ready deliveries
+  "0 4 * * *"     # 每天 04:00 UTC 恢复陈旧状态并压缩终态内容
 ]
 
 [observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.traces]
 enabled = true
 head_sampling_rate = 1
 
@@ -19,3 +32,23 @@ head_sampling_rate = 1
 binding = "DB"
 database_name = "rss"
 database_id = "<your-database-id>"
+
+[[queues.producers]]
+binding = "TELEGRAM_DELIVERY_QUEUE"
+queue = "telegram-delivery"
+
+[[queues.consumers]]
+queue = "telegram-delivery"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+retry_delay = 30
+dead_letter_queue = "telegram-delivery-dlq"
+max_concurrency = 1
+
+[[queues.consumers]]
+queue = "telegram-delivery-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 1

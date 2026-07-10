@@ -1,34 +1,25 @@
 import { XMLParser } from '../utils/xml-parser';
 import { decodeHtmlEntities, truncateText } from '../utils/text';
-import { CustomError } from '../utils/error-handler';
+import type { ParsedFeedItem } from './types';
 
-export function itHomeParser(content) {
+export function itHomeParser(content: string): ParsedFeedItem[] {
     try {
         const baseItems = XMLParser.parseRSS(content);
 
-        return baseItems.map(item => {
-            const processedDescription = processDescription(item.description);
+		return baseItems.map(item => {
+			const processedDescription = processDescription(item.description);
 
-            return {
-                ...item,
-                description: processedDescription,
-                message: formatMessage(
-                    item.title,
-                    processedDescription,
-                    item.link
-                )
-            };
+			return {
+				...item,
+				description: processedDescription,
+			};
         });
-    } catch (error) {
-        throw new CustomError(
-            'Failed to parse IT Home feed',
-            'PARSER_ERROR',
-            { content: content.substring(0, 100) }
-        );
-    }
+	} catch (error) {
+		throw new Error('Failed to parse IT Home feed', { cause: error });
+	}
 }
 
-function processDescription(description) {
+function processDescription(description: string): string {
     if (!description) return '';
 
     let processed = decodeHtmlEntities(description);
@@ -40,7 +31,7 @@ function processDescription(description) {
     processed = processed.replace(/<img[^>]*>/g, '');
     processed = processed.replace(
         /<table[^>]*>(.*?)<\/table>/gs,
-        (match, tableContent) => formatTable(tableContent)
+		(_match, tableContent: string) => formatTable(tableContent)
     );
 
     // 处理列表
@@ -61,7 +52,7 @@ function processDescription(description) {
     return truncateText(processed, 400);
 }
 
-function formatTable(tableContent) {
+function formatTable(tableContent: string): string {
     const rows = tableContent.match(/<tr[^>]*>(.*?)<\/tr>/gs) || [];
     return rows.map(row => {
         const cells = row.match(/<t[dh][^>]*>(.*?)<\/t[dh]>/g) || [];
@@ -69,8 +60,4 @@ function formatTable(tableContent) {
             .map(cell => cell.replace(/<[^>]+>/g, '').trim())
             .join(' | ');
     }).join('\n');
-}
-
-function formatMessage(title, description, link) {
-    return `<b>${title}</b>\n\n${description}\n\n<a href="${link}">阅读更多</a>`;
 }

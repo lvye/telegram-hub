@@ -1,53 +1,58 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for coding agents working in this repository.
 
-## Project Overview
+## Project overview
 
-Telegram Hub is a serverless RSS aggregator on Cloudflare Workers that fetches RSS feeds and pushes articles (with images) to Telegram channels via Bot API. Uses Cloudflare D1 (SQLite) for deduplication and state tracking.
+Telegram Hub is a TypeScript ES Module Worker. Scheduled events ingest RSS feeds, D1 stores item identity and a per-destination delivery state machine, and Cloudflare Queues delivers messages to Telegram asynchronously.
 
 ## Commands
 
 ```bash
-npm install          # Install dependencies
-npm run dev          # Local dev server (wrangler dev)
-npm run deploy       # Deploy to Cloudflare Workers
+npm ci
+npm run types       # regenerate worker-configuration.d.ts
+npm run typecheck
+npm test            # Vitest in the Cloudflare workerd pool
+npm run deploy:dry
+npm run check       # generated types + TypeScript + tests + dry-run bundle
+npm run dev
 ```
 
-Database migrations:
+Apply D1 migrations explicitly before deployment:
+
 ```bash
-wrangler d1 migrations apply rss --remote
+npx wrangler d1 migrations apply rss --local
+npx wrangler d1 migrations apply rss --remote
 ```
-
-There are no tests or lint commands configured.
 
 ## Architecture
 
-**Entry point:** `src/index.js` — Cloudflare Worker with `scheduled()` (cron) and `fetch()` (HTTP) handlers.
+- `src/worker.ts` is the only runtime entry point. It routes exact Cron expressions, Queue names, and the read-only health endpoint.
+- `src/ingestion/` fetches bounded RSS responses, normalizes feed items, and persists stable identities. It never sends Telegram messages.
+- `src/persistence/delivery-repository.ts` owns all D1 state transitions and leases.
+- `src/delivery/dispatcher.ts` publishes delivery IDs; `consumer.ts` acquires a lease and calls the Telegram adapter.
+- `src/parsers/` returns normalized feed data. Telegram HTML belongs in `src/delivery/telegram-formatter.ts`.
+- `migrations/` is the only source of truth for database schema.
 
-**Cron flow:** Every minute triggers source processing → iterates configured sources → fetches feed → parses with source-specific parser → filters candidate items → atomically claims each item in D1 → sends to Telegram → marks delivery state. Daily cleanup removes expired records.
+## Delivery invariants
 
-**Key modules:**
-- `src/config/index.js` — RSS sources array (name, url, parser type, chatId, parseMode) and operational settings
-- `src/handler/rss.js` — Main RSS processing orchestration
-- `src/handler/cleanup.js` — Daily DB cleanup
-- `src/parsers/` — Format-specific parsers (it-home, twitter) registered in `parsers/index.js`
-- `src/services/telegram.js` — TelegramClient with retry (3 attempts) and rate-limit handling; sends photos with caption, falls back to text-only
-- `src/services/database.js` — DatabaseService wrapping D1 queries
-- `src/utils/xml-parser.js` — Regex-based XML parsing (not DOM-based), handles CDATA and namespaced tags
+- Item identity is `(source_key, external_id)`; delivery identity is `(item_id, destination_key)`.
+- Ingestion treats a known identity as immutable. It scans the byte-bounded feed, queries known IDs once, and writes at most 50 unseen items per source so compaction stays compacted and delayed items can drain across runs.
+- Queue delivery is at-least-once. A consumer must acquire a D1 lease before calling Telegram and must make terminal transitions conditional on that lease token.
+- Respect both `available_at` and `lease_expires_at`; duplicate jobs must not bypass backoff or steal an active lease.
+- Retryable Telegram failures are rescheduled with Queue delay. Permanent failures become `dead`. Cloudflare's native DLQ handles infrastructure failures; its consumer preserves active leases and returns non-exhausted work to D1 `retry`.
+- Do not add sleep-based retries inside a Worker invocation.
+- Keep D1 query counts within the Workers Free per-invocation budget. A 10-message Queue batch currently uses at most 40 queries on the success path.
 
-**Database:** Single `pushed_items` table with delivery state fields (`status`, `createdAt`, `updatedAt`, `sentAt`, `lastError`). Consolidated schema in `migrations/schema.sql`; incremental changes are tracked in `migrations/*.sql`.
+## Migration and rollback
 
-**Environment variables:** `TELEGRAM_BOT_TOKEN` (secret), `DB` (D1 binding) — configured in `wrangler.toml`.
+Migration `0003` is additive. During the observation window, ingestion incrementally reconciles late legacy rows using `migration_bridge_state`, successful sends update the legacy `pushed_items` sent ledger, and daily cleanup bounds the old table. Preserve this bridge until rollback to the old Worker is no longer required; remove it and the old table only in a later migration.
 
-## Code Style
+The rollback bridge inherits the old table's globally unique GUID limitation. Do not introduce cross-source GUID collisions during the observation period. A near-zero-duplicate production cutover also requires pausing old triggers and waiting for in-flight invocations; code alone cannot eliminate overlap between an already-running old invocation and the new deployment.
 
-- Tabs for indentation, single quotes, semicolons required, 140 char print width (see `.prettierrc`)
-- Async/await throughout, no TypeScript
-- Structured JSON logging via `src/utils/logger.js`
-- Custom error class with codes in `src/utils/error-handler.js`
+## Style and tests
 
-## Adding a New RSS Source
-
-1. If the feed format needs special parsing, create a new parser in `src/parsers/` and register it in `src/parsers/index.js`
-2. Add the source config to the `rss.sources` array in `src/config/index.js` with name, url, parser, chatId, and parseMode
+- Tabs, single quotes, semicolons, strict TypeScript.
+- Keep network I/O in adapters and orchestration in event handlers.
+- Add workerd tests for state transitions, exact Cron routing, Queue retry/ack behavior, migration compatibility, and HTML escaping.
+- Native Queue integration tests run consumers in a separate request context; create mocked `Response` objects inside the fetch mock implementation, not ahead of time.

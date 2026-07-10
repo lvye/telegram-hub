@@ -1,8 +1,10 @@
+import type { ParsedFeedItem } from '../parsers/types';
+
 export class XMLParser {
 	// 基础 RSS 解析
-	static parseRSS(content) {
+	static parseRSS(content: string): ParsedFeedItem[] {
 		try {
-			const items = [];
+			const items: ParsedFeedItem[] = [];
 			const itemRegex = /<item>([\s\S]*?)<\/item>/g;
 
 			let match;
@@ -22,12 +24,13 @@ export class XMLParser {
 
 			return items;
 		} catch (error) {
-			throw new Error(`Failed to parse RSS feed: ${error.message}`);
+			const message = error instanceof Error ? error.message : String(error);
+			throw new Error(`Failed to parse RSS feed: ${message}`, { cause: error });
 		}
 	}
 
 	// 解析基本的 RSS 项目字段
-	static parseBaseItem(itemContent) {
+	static parseBaseItem(itemContent: string): ParsedFeedItem {
 		return {
 			guid: this.getTagContent(itemContent, 'guid') ||
 				this.getTagContent(itemContent, 'link'),
@@ -39,7 +42,7 @@ export class XMLParser {
 	}
 
 	// 提取标签内容 - 改进版本，支持命名空间
-	static getTagContent(text, tag) {
+	static getTagContent(text: string, tag: string): string {
 		// 首先尝试精确匹配
 		let regex = new RegExp(`<${tag}[^>]*>(.*?)<\/${tag}>`, 's');
 		let match = text.match(regex);
@@ -62,16 +65,18 @@ export class XMLParser {
 	}
 
 	// 解析日期
-	static parseDate(dateStr) {
-		return dateStr ? new Date(dateStr).toISOString() : null;
+	static parseDate(dateStr: string): string | null {
+		if (!dateStr) return null;
+		const timestamp = Date.parse(dateStr);
+		return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 	}
 
-	static removeCDATA(text) {
+	static removeCDATA(text: string): string {
 		return text.replace(/<!\[CDATA\[(.*?)\]\]>/gs, '$1');
 	}
 
-	static parseAttributes(attributeString) {
-		const attributes = {};
+	static parseAttributes(attributeString: string): Record<string, string> {
+		const attributes: Record<string, string> = {};
 		if (!attributeString) return attributes;
 
 		// 匹配 key="value" 或 key='value' 格式

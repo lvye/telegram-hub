@@ -47,7 +47,12 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Deploy Worker
-        run: npx wrangler deploy --strict
+        run: npx wrangler deploy --strict --tag "$GITHUB_SHA"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Smoke test deployed Worker
+        run: node scripts/smoke-health.mjs
+        env:
+          EXPECTED_VERSION_TAG: ${{ github.sha }}
+          WORKER_BASE_URL: https://telegram-hub.fuhanfeng.workers.dev

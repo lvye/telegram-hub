@@ -12,6 +12,10 @@ import type {
 	TwitterApiIoCheckpointProgress,
 	TwitterApiIoCheckpointStore,
 } from './twitter-api-checkpoint';
+import {
+	fetchNitterRssOverTls,
+	type NitterRssTransport,
+} from './nitter-tls-client';
 
 export const NITTER_USER_ADAPTER_KEY = 'nitter.user-timeline';
 
@@ -20,7 +24,10 @@ const NITTER_USER_AGENT = 'Mozilla/5.0 (compatible; TelegramHub/1.0; +https://gi
 export class NitterUserSourceAdapter implements SourceAdapter<NitterUserAdapterConfig> {
 	readonly key = NITTER_USER_ADAPTER_KEY;
 
-	constructor(private readonly checkpoints: TwitterApiIoCheckpointStore) {}
+	constructor(
+		private readonly checkpoints: TwitterApiIoCheckpointStore,
+		private readonly transport: NitterRssTransport = fetchNitterRssOverTls,
+	) {}
 
 	decodeConfig(config: unknown): NitterUserAdapterConfig {
 		return decodeNitterUserAdapterConfig(config);
@@ -42,6 +49,12 @@ export class NitterUserSourceAdapter implements SourceAdapter<NitterUserAdapterC
 			parser: 'twitter',
 			identityStrategy: 'twitter-status-url',
 		}, source.identityNamespace, context.options, {
+			fetchImpl: (input, init) => this.transport(
+				input,
+				init,
+				context.options.feedTimeoutMs,
+				context.options.maxFeedBytes,
+			),
 			headers: {
 				'user-agent': NITTER_USER_AGENT,
 			},

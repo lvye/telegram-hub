@@ -1,9 +1,12 @@
-import type { SourceConfig } from '../config';
+import type { DeliveryDestinationConfig } from '../config';
 import type { DeliveryLease } from '../domain/delivery';
 import { renderHtmlForTelegram } from './telegram-html-serializer';
 
-export function formatTelegramMessage(delivery: DeliveryLease, source: SourceConfig): string {
-	if (source.messageFormat === 'twitter') {
+export function formatTelegramMessage(
+	delivery: DeliveryLease,
+	destination: DeliveryDestinationConfig,
+): string {
+	if (destination.messageFormat === 'twitter') {
 		return [
 			escapeHtml(delivery.title ?? ''),
 			`${escapeHtml(delivery.author ?? 'Unknown User')}: ${formatLink(delivery.link, '查看原文')}`,

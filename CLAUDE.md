@@ -28,15 +28,17 @@ npx wrangler d1 migrations apply rss --remote
 ## Architecture
 
 - `src/worker.ts` is the only runtime entry point. It routes exact Cron expressions, Queue names, and the read-only health endpoint.
-- `src/ingestion/` contains bounded provider adapters (RSS and TwitterAPI.io), normalizes items, and persists stable identities. Twitter provider changes must preserve RSS GUID aliases, the latest-known-identity handoff high-water, and resumable API pagination. It never sends Telegram messages.
+- `src/ingestion/` contains the Source Catalog, adapter registry, provider adapters, and provider-neutral ingestion service. Adapters emit `CanonicalItem`; the service owns identity lookup, persistence, and checkpoint commits. Twitter provider changes must preserve RSS GUID aliases, the latest-known-identity handoff high-water, and resumable API pagination. It never sends Telegram messages.
+- A runtime source separates `sourceId`, `adapterKey`, identity namespace, destination key, and cadence. Telegram chat IDs and formatting belong to destination configuration, never adapter inputs.
 - `src/persistence/delivery-repository.ts` owns all D1 state transitions and leases.
 - `src/delivery/dispatcher.ts` publishes delivery IDs; `consumer.ts` acquires a lease and calls the Telegram adapter.
-- `src/parsers/` returns normalized feed data. Telegram HTML belongs in `src/delivery/telegram-formatter.ts`.
+- `src/parsers/` interprets feed-specific data. Adapters convert parser output to canonical items; final Telegram formatting and rich-text revalidation live in the delivery layer.
 - `migrations/` is the only source of truth for database schema.
 
 ## Delivery invariants
 
 - Item identity is `(source_key, external_id)`; delivery identity is `(item_id, destination_key)`.
+- Adding a provider must only require a `SourceAdapter` registration and Catalog entry. Do not add provider conditionals to `IngestionService`.
 - Ingestion treats a known identity as immutable. RSS scans the byte-bounded feed and writes at most 50 unseen items per run; the API adapter uses a bounded page budget plus a durable continuation cursor. Both query known aliases once so compaction stays compacted and delayed items can drain across runs.
 - Provider switches must preserve `source_key`, canonicalize provider-specific identity, and bootstrap `source_ingestion_state` from a known identity rather than a wall-clock-only cutover.
 - Queue delivery is at-least-once. A consumer must acquire a D1 lease before calling Telegram and must make terminal transitions conditional on that lease token.

@@ -5,11 +5,12 @@ import {
 	getQueueResult,
 } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DeliveryJob, ItemInput } from '../src/domain/delivery';
+import type { DeliveryJob } from '../src/domain/delivery';
+import type { CanonicalItem } from '../src/domain/ingestion';
 import { DeliveryRepository } from '../src/persistence/delivery-repository';
 import worker from '../src/worker';
 
-const ITEM: ItemInput = {
+const ITEM: CanonicalItem = {
 	externalId: 'queue-item',
 	title: 'Queue item',
 	description: 'Queue description',
@@ -82,6 +83,29 @@ describe('delivery queue consumer', () => {
 
 		expect(result.explicitAcks).toEqual(['queue-message-1']);
 		await expect(repository.getState(deliveryId)).resolves.toMatchObject({ status: 'dead' });
+	});
+
+	it('marks an unknown destination dead without calling Telegram', async () => {
+		await repository.upsertItems('UNKNOWN', 'telegram:MISSING', [{
+			...ITEM,
+			externalId: 'unknown-destination-item',
+		}]);
+		const [delivery] = await repository.listDispatchable();
+		await repository.markQueued([delivery.deliveryId]);
+
+		const { result } = await dispatch(delivery.deliveryId);
+
+		expect(result.explicitAcks).toEqual(['queue-message-1']);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		const row = await env.DB.prepare(`
+			SELECT status, last_error_code
+			FROM deliveries
+			WHERE id = ?
+		`).bind(delivery.deliveryId).first<{
+			last_error_code: string | null;
+			status: string;
+		}>();
+		expect(row).toEqual({ status: 'dead', last_error_code: 'UNKNOWN_DESTINATION' });
 	});
 
 	it('acks a duplicate queue message without sending Telegram twice', async () => {

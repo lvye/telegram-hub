@@ -1,4 +1,4 @@
-import { findSourceByDestination, type AppConfig } from '../config';
+import { findDestination, type AppConfig } from '../config';
 import type { DeliveryJob, DeliveryLease } from '../domain/delivery';
 import { DeliveryRepository } from '../persistence/delivery-repository';
 import { PermanentDeliveryError, RetryableDeliveryError } from './errors';
@@ -128,22 +128,27 @@ async function deliver(
 	config: AppConfig,
 	telegram: TelegramClient,
 ): Promise<{ messageId: string | null }> {
-	const source = findSourceByDestination(config, lease.destinationKey);
-	if (!source) {
+	const destination = findDestination(config, lease.destinationKey);
+	if (!destination) {
 		throw new PermanentDeliveryError(
 			`Unknown destination: ${lease.destinationKey}`,
 			'UNKNOWN_DESTINATION',
 		);
 	}
 
-	const message = formatTelegramMessage(lease, source);
+	const message = formatTelegramMessage(lease, destination);
 	if (!message) {
 		throw new PermanentDeliveryError('Telegram message is empty', 'EMPTY_MESSAGE');
 	}
 
 	if (lease.imageUrl) {
 		try {
-			return await telegram.sendPhoto(source.chatId, lease.imageUrl, message, source.parseMode);
+			return await telegram.sendPhoto(
+				destination.chatId,
+				lease.imageUrl,
+				message,
+				destination.parseMode,
+			);
 		} catch (error) {
 			if (!(error instanceof PermanentDeliveryError)) throw error;
 
@@ -155,7 +160,7 @@ async function deliver(
 		}
 	}
 
-	return telegram.sendMessage(source.chatId, message, source.parseMode);
+	return telegram.sendMessage(destination.chatId, message, destination.parseMode);
 }
 
 async function handleUnavailableDelivery(

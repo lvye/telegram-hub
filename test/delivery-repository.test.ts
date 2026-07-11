@@ -1,9 +1,9 @@
 import { env } from 'cloudflare:workers';
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { ItemInput } from '../src/domain/delivery';
+import type { CanonicalItem } from '../src/domain/ingestion';
 import { DeliveryRepository } from '../src/persistence/delivery-repository';
 
-const ITEM: ItemInput = {
+const ITEM: CanonicalItem = {
 	externalId: 'shared-guid',
 	title: 'Example item',
 	description: 'Example description',
@@ -146,6 +146,36 @@ describe('DeliveryRepository', () => {
 		);
 	});
 
+	it('rejects delivery routing when candidate aliases resolve to different items', async () => {
+		await repository.upsertItems('TWITTER', 'telegram:TWITTER', [
+			{
+				...ITEM,
+				externalId: 'twitter:first',
+				identityAliases: ['twitter:first'],
+			},
+			{
+				...ITEM,
+				externalId: 'twitter:second',
+				identityAliases: ['twitter:second'],
+			},
+		]);
+
+		await expect(repository.ensureDeliveriesForCandidates(
+			'TWITTER',
+			'telegram:SECONDARY',
+			[{
+				externalId: 'twitter:first',
+				identityAliases: ['twitter:second'],
+			}],
+		)).rejects.toThrow('Ambiguous item identity aliases for TWITTER');
+		const secondary = await env.DB.prepare(`
+			SELECT COUNT(*) AS count
+			FROM deliveries
+			WHERE destination_key = 'telegram:SECONDARY'
+		`).first<{ count: number }>();
+		expect(secondary?.count).toBe(0);
+	});
+
 	it('keeps the same external id independent across sources', async () => {
 		await repository.upsertItems('SOURCE_A', 'telegram:SOURCE_A', [ITEM], 1_000);
 		await repository.upsertItems('SOURCE_B', 'telegram:SOURCE_B', [ITEM], 1_000);
@@ -158,7 +188,7 @@ describe('DeliveryRepository', () => {
 	});
 
 	it('persists a full 100-tweet API page budget within D1 binding limits', async () => {
-		const items = Array.from({ length: 100 }, (_, index): ItemInput => ({
+		const items = Array.from({ length: 100 }, (_, index): CanonicalItem => ({
 			...ITEM,
 			externalId: `batch-item-${index}`,
 			link: `https://example.com/items/${index}`,

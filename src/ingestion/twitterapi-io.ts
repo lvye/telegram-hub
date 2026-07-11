@@ -1,5 +1,5 @@
-import type { AppConfig, TwitterApiIoSourceConfig } from '../config';
-import type { ParsedFeedItem } from '../parsers/types';
+import type { TwitterApiIoUserAdapterConfig } from '../config';
+import type { CanonicalItem, IngestionOptions } from '../domain/ingestion';
 
 interface TwitterApiIoAuthor {
 	id?: unknown;
@@ -29,7 +29,7 @@ export interface TwitterApiIoFetchRequest {
 
 export interface TwitterApiIoBatch {
 	completed: boolean;
-	items: ParsedFeedItem[];
+	items: CanonicalItem[];
 	newestExternalId: string | null;
 	nextCursor: string | null;
 	stopReason: 'cutover' | 'end' | 'high-water' | 'page-budget';
@@ -47,11 +47,11 @@ export class TwitterApiIoError extends Error {
 }
 
 export async function fetchTwitterApiIoBatch(
-	source: TwitterApiIoSourceConfig,
-	options: AppConfig['ingestion'],
+	source: TwitterApiIoUserAdapterConfig,
+	options: IngestionOptions,
 	request: TwitterApiIoFetchRequest,
 ): Promise<TwitterApiIoBatch> {
-	const items: ParsedFeedItem[] = [];
+	const items: CanonicalItem[] = [];
 	const startedFromBeginning = request.cursor === null;
 	const seenCursors = new Set<string>([request.cursor ?? '']);
 	let cursor = request.cursor ?? '';
@@ -124,8 +124,8 @@ export async function fetchTwitterApiIoBatch(
 }
 
 async function fetchPage(
-	source: TwitterApiIoSourceConfig,
-	options: AppConfig['ingestion'],
+	source: TwitterApiIoUserAdapterConfig,
+	options: IngestionOptions,
 	cursor: string,
 ): Promise<TwitterApiIoPage> {
 	const url = new URL(source.endpoint);
@@ -181,15 +181,16 @@ async function fetchPage(
 
 function normalizeTweet(
 	tweet: TwitterApiIoTweet,
-	source: TwitterApiIoSourceConfig,
-): ParsedFeedItem[] {
+	source: TwitterApiIoUserAdapterConfig,
+): CanonicalItem[] {
 	const id = stringValue(tweet.id);
 	if (!id) {
 		console.warn({ event: 'twitterapi_io_tweet_skipped', reason: 'missing_id' });
 		return [];
 	}
 	const createdAt = stringValue(tweet.createdAt);
-	if (!createdAt || parsedTweetTime(createdAt) === null) {
+	const publishedAt = parsedTweetTime(createdAt);
+	if (publishedAt === null) {
 		console.warn({
 			event: 'twitterapi_io_tweet_skipped',
 			reason: 'invalid_created_at',
@@ -200,20 +201,38 @@ function normalizeTweet(
 
 	const author = objectValue(tweet.author) as TwitterApiIoAuthor | null;
 	const userName = normalizedUserName(author?.userName) ?? source.userName;
-	const link = validHttpUrl(tweet.url)
+	const rawLink = validHttpUrl(tweet.url)
 		?? (userName
 			? `https://x.com/${encodeURIComponent(userName)}/status/${id}`
 			: `https://x.com/i/web/status/${id}`);
+	const link = canonicalTweetLink(rawLink);
+	const externalId = `twitter:${id}`;
 
 	return [{
-		guid: `twitter:${id}`,
-		title: stringValue(tweet.text) ?? '',
-		description: '',
+		externalId,
+		identityAliases: [...new Set([externalId, rawLink, link])],
+		title: stringValue(tweet.text),
+		description: null,
 		link,
-		pubDate: createdAt,
 		author: formatAuthor(author),
-		image: null,
+		imageUrl: null,
+		publishedAt,
+		metadata: {
+			provider: 'twitterapi-io',
+			parser: 'twitter',
+		},
 	}];
+}
+
+function canonicalTweetLink(link: string): string {
+	try {
+		const url = new URL(link);
+		if (!['twitter.com', 'www.twitter.com', 'x.com', 'www.x.com'].includes(url.hostname)) return link;
+		const match = url.pathname.match(/^\/([^/]+)\/status\/(\d+)/);
+		return match ? `https://x.com/${match[1]}/status/${match[2]}` : link;
+	} catch {
+		return link;
+	}
 }
 
 function formatAuthor(author: TwitterApiIoAuthor | null): string {

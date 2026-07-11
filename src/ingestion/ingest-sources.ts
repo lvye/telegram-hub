@@ -10,6 +10,7 @@ import {
 	validateSourceDefinition,
 } from './source-adapter-registry';
 import { D1SourceCatalog } from './source-catalog';
+import { NitterUserSourceAdapter } from './nitter-source-adapter';
 import { TwitterApiIoUserSourceAdapter } from './twitter-api-source-adapter';
 
 export type { SourceIngestionResult } from './ingestion-service';
@@ -185,9 +186,9 @@ export function validateRuntimeTopology(
 export function defaultSourceAdapterRegistry(
 	repository: DeliveryRepository,
 ): SourceAdapterRegistry {
+	const checkpoints = new D1TwitterApiIoCheckpointStore(repository);
 	return new SourceAdapterRegistry()
 		.register(new RssSourceAdapter())
-		.register(new TwitterApiIoUserSourceAdapter(
-			new D1TwitterApiIoCheckpointStore(repository),
-		));
+		.register(new NitterUserSourceAdapter(checkpoints))
+		.register(new TwitterApiIoUserSourceAdapter(checkpoints));
 }

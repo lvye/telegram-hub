@@ -70,6 +70,25 @@ describe('source configuration', () => {
 		});
 	});
 
+	it('selects Nitter explicitly while retaining TwitterAPI.io credentials for rollback', () => {
+		const config = getConfig({
+			...BASE_ENV,
+			TWITTER_SOURCE_PROVIDER: 'nitter',
+			NITTER_BASE_URL: 'https://nitter.net/',
+			TWITTERAPI_IO_API_KEY: 'configured-but-disabled',
+			TWITTERAPI_IO_USER_NAME: 'OpenAI',
+		} as Env);
+
+		expect(config.twitterSourceProvider).toBe('nitter');
+		expect(config.nitter.baseUrl).toBe('https://nitter.net/');
+		expect(config.sources[1]).toMatchObject({
+			type: 'rss',
+			sourceKey: 'TWITTER',
+			url: 'https://example.com/twitter.xml',
+		});
+		expect(config.twitterApiIo.apiKey).toBe('configured-but-disabled');
+	});
+
 	it('prefers the stable user ID and bounds optional polling settings', () => {
 		const config = getConfig({
 			...BASE_ENV,

@@ -1,5 +1,7 @@
 import { renderHtmlForTelegram } from '../delivery/telegram-html-serializer';
 import { XMLParser } from '../utils/xml-parser';
+import { parseDocument } from 'htmlparser2';
+import { hasChildren, isTag, type ChildNode } from 'domhandler';
 import type { ParsedFeedItem } from './types';
 
 export function twitterParser(content: string): ParsedFeedItem[] {
@@ -8,7 +10,10 @@ export function twitterParser(content: string): ParsedFeedItem[] {
 			const fullDescription = renderHtmlForTelegram(item.description).text;
 			const description = truncateText(fullDescription, 400);
 			const author = item.author?.trim() || authorFromDescription(fullDescription) || 'Unknown User';
-			const candidates = item.imageCandidates ?? (item.image ? [item.image] : []);
+			const candidates = [
+				...(item.imageCandidates ?? (item.image ? [item.image] : [])),
+				...descriptionImageUrls(item.description),
+			];
 			const image = firstValidImageUrl(candidates, item.guid);
 
 			return {
@@ -21,6 +26,25 @@ export function twitterParser(content: string): ParsedFeedItem[] {
 	} catch (error) {
 		throw new Error('Failed to parse Twitter feed', { cause: error });
 	}
+}
+
+function descriptionImageUrls(description: string): string[] {
+	const document = parseDocument(description, {
+		decodeEntities: true,
+		lowerCaseAttributeNames: true,
+		lowerCaseTags: true,
+		xmlMode: false,
+	});
+	const urls: string[] = [];
+	const stack: ChildNode[] = [...document.children].reverse();
+	while (stack.length > 0) {
+		const node = stack.pop()!;
+		if (isTag(node) && node.name === 'img' && node.attribs.src?.trim()) {
+			urls.push(node.attribs.src.trim());
+		}
+		if (hasChildren(node)) stack.push(...[...node.children].reverse());
+	}
+	return [...new Set(urls)];
 }
 
 function truncateText(value: string, maxLength: number): string {

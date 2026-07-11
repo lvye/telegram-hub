@@ -6,6 +6,12 @@ upload_source_maps = true
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
+[vars]
+# Temporarily route the shared D1 Twitter subscription list through Nitter.
+# Change back to "twitterapi-io" to restore the API provider without data changes.
+TWITTER_SOURCE_PROVIDER = "nitter"
+NITTER_BASE_URL = "https://nitter.net/"
+
 [secrets]
 required = [
   "TELEGRAM_BOT_TOKEN",

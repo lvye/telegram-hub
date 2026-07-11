@@ -1,6 +1,8 @@
 import { env } from 'cloudflare:workers';
 import { beforeEach, expect, it } from 'vitest';
 import { getConfig } from '../src/config';
+import { D1SourceCatalogV2 } from '../src/ingestion/source-catalog-v2';
+import { DeliveryRepositoryV2 } from '../src/persistence/delivery-repository-v2';
 import { SchemaV2ShadowMirror } from '../src/persistence/schema-v2-shadow';
 
 const NOW = 1_783_760_000;
@@ -86,6 +88,18 @@ it('mirrors legacy topology, checkpoint, identity, observation, and delivery ide
 		contentItems: 0,
 		messageDeliveries: 1,
 	});
+	const sources = await new D1SourceCatalogV2(env.DB_V2, getConfig(workerEnv())).list();
+	expect(sources).toEqual([expect.objectContaining({
+		adapterKey: 'nitter.user-timeline',
+		destinationKey: 'telegram:twitter',
+		identityNamespace: 'twitter:status',
+		sourceId: 'nitter:subscription:1',
+		config: expect.objectContaining({
+			feedUrl: 'https://nitter.net/MacroMargin/rss',
+			providerStateKey: 'nitter:subscription:1',
+			userName: 'MacroMargin',
+		}),
+	})]);
 
 	const row = await env.DB_V2.prepare(`
 		SELECT
@@ -129,6 +143,46 @@ it('mirrors legacy topology, checkpoint, identity, observation, and delivery ide
 		items: 1,
 		observations: 1,
 	});
+
+	const repository = new DeliveryRepositoryV2(env.DB_V2);
+	await expect(repository.ensureDeliveriesForCandidates(
+		'twitter:status',
+		'telegram:twitter',
+		[{
+			externalId: 'twitter:123',
+			identityAliases: ['https://nitter.net/MacroMargin/status/123#m'],
+		}],
+		NOW + 1,
+		'nitter:subscription:1',
+	)).resolves.toBe(0);
+	const observation = await env.DB_V2.prepare(`
+		SELECT last_observed_at
+		FROM item_observations
+	`).first();
+	expect(observation).toEqual({ last_observed_at: NOW + 1 });
+
+	const checkpoint = await repository.getOrCreateSourceProviderState(
+		'twitter:status',
+		'nitter:subscription:1',
+		NOW - 300,
+	);
+	expect(checkpoint.highWaterExternalId).toBe('twitter:123');
+	await repository.updateSourceIngestionProgress(
+		'twitter:status',
+		'nitter:subscription:1',
+		checkpoint,
+		{
+			highWaterExternalId: 'twitter:124',
+			nextCursor: null,
+			pendingHighWaterExternalId: null,
+		},
+		NOW + 1,
+	);
+	const committed = await env.DB_V2.prepare(`
+		SELECT version, high_water_identity
+		FROM source_connector_checkpoints
+	`).first();
+	expect(committed).toEqual({ high_water_identity: 'twitter:124', version: 1 });
 });
 
 function workerEnv(): Env {

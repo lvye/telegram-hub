@@ -4,10 +4,10 @@ import type {
 	TwitterApiIoCheckpointRequest,
 	TwitterApiIoCheckpointStore,
 } from '../ingestion/twitter-api-checkpoint';
-import { DeliveryRepository } from './delivery-repository';
+import type { IngestionRepository } from './ingestion-repository';
 
 export class D1TwitterApiIoCheckpointStore implements TwitterApiIoCheckpointStore {
-	constructor(private readonly repository: DeliveryRepository) {}
+	constructor(private readonly repository: IngestionRepository) {}
 
 	getOrCreate(request: TwitterApiIoCheckpointRequest): Promise<TwitterApiIoCheckpoint> {
 		return this.repository.getOrCreateSourceProviderState(

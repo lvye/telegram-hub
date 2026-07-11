@@ -8,25 +8,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getConfig } from '../src/config';
 import type { IngestionJob } from '../src/domain/ingestion';
 import { ingestionRetryDelaySeconds } from '../src/ingestion/consumer';
-import { D1SourceCatalog } from '../src/ingestion/source-catalog';
-import { SourceRuntimeStateRepository } from '../src/persistence/source-runtime-state-repository';
+import { D1SourceCatalogV2 } from '../src/ingestion/source-catalog-v2';
+import { SourceRuntimeStateRepositoryV2 } from '../src/persistence/source-runtime-state-repository-v2';
 import worker from '../src/worker';
+import { resetV2, seedDefaultV2Topology } from './v2-fixtures';
 
 const NOW = Math.floor(Date.parse('2026-07-10T04:10:00Z') / 1_000);
 const SOURCE_ID = 'rss:it_home';
 
 describe('ingestion queue consumer', () => {
-	const runtime = new SourceRuntimeStateRepository(env.DB);
+	const runtime = new SourceRuntimeStateRepositoryV2(env.DB_V2);
 
 	beforeEach(async () => {
 		vi.spyOn(Date, 'now').mockReturnValue(NOW * 1_000);
-		await env.DB.batch([
-			env.DB.prepare('DELETE FROM source_runtime_state'),
-			env.DB.prepare('DELETE FROM deliveries'),
-			env.DB.prepare('DELETE FROM items'),
-			env.DB.prepare('DELETE FROM source_ingestion_state'),
-			env.DB.prepare('DELETE FROM twitter_subscriptions'),
-		]);
+		await resetV2(env.DB_V2);
+		await seedDefaultV2Topology(env.DB_V2, getConfig(ingestionEnv()), NOW);
 	});
 
 	it('ingests one claimed source, acks it, and releases the runtime lease', async () => {
@@ -43,8 +39,9 @@ describe('ingestion queue consumer', () => {
 			lastSuccessAt: NOW,
 			nextPollAt: NOW + 60,
 		});
-		const item = await env.DB.prepare(`
-			SELECT external_id FROM items WHERE source_key = 'IT_HOME'
+		const item = await env.DB_V2.prepare(`
+			SELECT canonical_id AS external_id
+			FROM content_items WHERE identity_namespace = 'rss:it-home'
 		`).first<{ external_id: string }>();
 		expect(item).toEqual({ external_id: 'queued-guid' });
 	});
@@ -172,10 +169,11 @@ describe('ingestion queue consumer', () => {
 
 		await vi.waitFor(async () => {
 			expect(await runtime.get(SOURCE_ID)).toMatchObject({ status: 'idle' });
-			const delivery = await env.DB.prepare(`
-				SELECT status FROM deliveries
-				JOIN items ON items.id = deliveries.item_id
-				WHERE items.external_id = 'native-queue-guid'
+			const delivery = await env.DB_V2.prepare(`
+				SELECT message_deliveries.state AS status
+				FROM message_deliveries
+				JOIN content_items ON content_items.id = message_deliveries.item_id
+				WHERE content_items.canonical_id = 'native-queue-guid'
 			`).first<{ status: string }>();
 			expect(delivery).toEqual({ status: 'sent' });
 		}, { timeout: 2_000, interval: 20 });
@@ -183,7 +181,7 @@ describe('ingestion queue consumer', () => {
 
 	async function claimedJob(claimSeconds = 300): Promise<IngestionJob> {
 		const config = getConfig(env);
-		const sources = await new D1SourceCatalog(env.DB, config).list();
+		const sources = await new D1SourceCatalogV2(env.DB_V2, config).list();
 		await runtime.syncSources(sources, NOW);
 		const queueToken = crypto.randomUUID();
 		await runtime.claimForQueue(SOURCE_ID, queueToken, NOW, claimSeconds);

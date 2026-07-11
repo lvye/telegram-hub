@@ -2,7 +2,7 @@
 
 [English](./README_EN.md)
 
-基于 Cloudflare Workers 的 RSS / TwitterAPI.io → Telegram 聚合器。Cron 只负责生成来源任务，D1 保存稳定 identity 和运行状态，Cloudflare Queues 负责异步采集、投递、退避重试和死信处理。
+基于 Cloudflare Workers 的 RSS / Nitter / TwitterAPI.io → Telegram 聚合器。Cron 只负责生成来源任务，D1 保存稳定 identity 和运行状态，Cloudflare Queues 负责异步采集、投递、退避重试和死信处理。
 
 ## 运行模型
 
@@ -12,7 +12,7 @@ Cron (* * * * *)
   → Ingestion Queue: sourceId + queueToken
   → D1 source lease
   → 抓取/解析 RSS，或调用 TwitterAPI.io
-  → D1: items + deliveries (ready)
+  → D1: content_items + message_deliveries (pending)
   → Delivery Queue: deliveryId
   → queue() consumer
   → D1 lease
@@ -34,16 +34,16 @@ Worker 仅保留只读的 `GET /health` 和 `GET /health/ready`。readiness 会�
 - ES Module Worker + TypeScript，binding 类型由 `wrangler types` 生成
 - 同一个 Worker 同时处理 `scheduled()`、`queue()` 和只读 `fetch()`
 - Source Runtime 将 `sourceId`、adapter、identity namespace 和 destination 分离；Cron 只通过 Catalog 与 adapter registry 调度来源
-- `source_runtime_state` 保存 provider-neutral 的 cadence、租约、连续失败和下次轮询状态；`source_ingestion_state` 只保存 provider checkpoint
+- `source_connector_state` 保存 provider-neutral 的 cadence、租约、连续失败和下次轮询状态；`source_connector_checkpoints` 保存 provider checkpoint
 - Cron 只按 `next_poll_at` 产生一个 source 一个 job；Ingestion Queue consumer 用 queue token 和 source lease 吸收重复或过期消息
 - 来源 429/5xx 同时遵守 `Retry-After`、指数退避和 jitter；永久 4xx 进入 `blocked`，原生 ingestion DLQ 耗尽后写入 `dead`，两者在不同冷却期后自动探测恢复
 - RSS、Nitter 与 TwitterAPI.io adapter 都输出 provider-neutral `CanonicalItem`，统一 ingestion service 负责去重、入库和 checkpoint 提交
 - Telegram chat、parse mode 和 message format 属于独立 destination 配置，不再混入抓取 source
-- 使用 `(source_key, external_id)` 去重，不依赖发布时间水位
-- Nitter、TwitterAPI.io 与旧 RSS 共用 `TWITTER` identity alias；RSS 保留原 GUID，tweet status ID 负责跨 provider 去重
+- 使用 `(identity_namespace, canonical_id)` 和独立的 `item_identities` 去重，不依赖发布时间水位
+- Nitter、TwitterAPI.io 与旧 RSS 共用 `twitter` identity namespace；RSS 保留原 GUID，tweet status ID 负责跨 provider 去重
 - 最新已知 RSS tweet identity 作为切换 high-water，避免墙钟 cutover 漏推；订阅表中的账号独立失败，不会重复抓取同一个 RSS fallback
 - TwitterAPI.io 的 cursor、pending high-water 与 committed high-water 持久化到 D1；单轮达到 page budget 后下轮续拉
-- 扫描整个受 2 MB 上限保护的 Feed，每轮只写入最早的 50 个未见 identity；重复 Feed 对 `items/deliveries` 零写入，窗口外延迟文章会在后续轮次补入
+- 扫描整个受 2 MB 上限保护的 Feed，每轮只写入最早的 50 个未见 identity；重复 Feed 对 `content_items/message_deliveries` 零写入，窗口外延迟文章会在后续轮次补入
 - 使用 `(item_id, destination_key)` 独立跟踪每次投递
 - D1 lease 支持中断后的安全重领
 - Telegram 429 使用 Queue `delaySeconds` 重试，不在 Worker 中长时间 sleep
@@ -65,8 +65,8 @@ src/
 ├── parsers/                     # 数据源解析器
 └── utils/                       # 文本与 XML 工具
 
-migrations/                      # D1 schema 的唯一事实来源
-migrations_v2/                   # 下一代规范化 schema（切换前独立验证）
+migrations/                      # 旧 DB 的迁移历史（观察期保留）
+migrations_v2/                   # 当前生产 DB_V2 schema 的唯一事实来源
 test/                            # workerd 集成测试
 ```
 
@@ -81,14 +81,14 @@ npm ci
 ### 2. 创建 Cloudflare 资源
 
 ```bash
-npx wrangler d1 create rss
+npx wrangler d1 create telegram-hub-prod
 npx wrangler queues create telegram-delivery
 npx wrangler queues create telegram-delivery-dlq
 npx wrangler queues create source-ingestion
 npx wrangler queues create source-ingestion-dlq
 ```
 
-将 D1 命令返回的 `database_id` 写入 `wrangler.toml`。Queue 名称已经在配置中声明。
+将 D1 命令返回的 `database_id` 写入 `wrangler.toml` 的 `DB_V2` binding。现有部署还保留只读的旧 `DB` binding 供观察和数据核对；全新环境不需要导入旧表。Queue 名称已经在配置中声明。
 
 ### 3. 配置密钥
 
@@ -103,24 +103,22 @@ npx wrangler secret put TWITTER_RSS_URL
 
 ### Twitter provider 切换
 
-Twitter 账号名单只维护在 D1 `twitter_subscriptions` 表中。`wrangler.toml` 的非敏感变量 `TWITTER_SOURCE_PROVIDER` 决定所有 `active` 账号使用哪个 provider：
+Twitter 账号作为 D1 `sources` 和 `source_connectors` 运行数据维护，真实账号行不进入 Git。`source_connectors.adapter_key` 决定每个账号使用哪个 provider：
 
-- `nitter`：逐账号请求 `${NITTER_BASE_URL}/{user_name}/rss`，当前用于和 API 结果对比；
-- `twitterapi-io`：恢复 TwitterAPI.io adapter、checkpoint 和分页逻辑。
+- `nitter.user-timeline`：逐账号请求 connector `config_json` 中的 `{baseUrl}/{userName}/rss`；
+- `twitterapi-io.user-timeline`：使用 TwitterAPI.io adapter、checkpoint 和分页逻辑。
 
-当前仓库配置为 `nitter`。切换不会改动订阅数据、API secret 或跨 provider identity；catalog 同步会暂停不再出现的旧 runtime sources。Nitter 的公开实例会阻断 Workers 常规 HTTP 出站，因此 adapter 对已配置的 HTTPS feed 使用受响应大小与超时限制的原生 TLS socket，并发送固定的只读 HTTP/1.1 GET。状态链接会规范化为 `x.com`，图片从 description HTML 提取。首次启用会按账号已有 tweet high-water 建立独立 checkpoint，避免重推整段历史。
+当前生产 connector 使用 `nitter.user-timeline` adapter。切换 provider 时应保留稳定的 `source_key`、`connector_key` 和 `identity_namespace`，仅更新 adapter/config；checkpoint 和跨 provider identity 不会丢失。Nitter adapter 对已配置的 HTTPS feed 使用受响应大小与超时限制的原生 TLS socket，并发送固定的只读 HTTP/1.1 GET。状态链接会规范化为 `x.com`，图片从 description HTML 提取。
 
 ### 可选：启用 TwitterAPI.io
 
-API key 只保存在 Worker secret；订阅账号由 D1 的 `twitter_subscriptions` 表维护：
+API key 只保存在 Worker secret；账号及 provider 配置由 D1 的 `sources`、`source_connectors` 维护：
 
 ```bash
 npx wrangler secret put TWITTERAPI_IO_API_KEY
 ```
 
-应用 migration 后，通过 Cloudflare Dashboard 或一次性的 `wrangler d1 execute --remote --command` 写入账号。不要把真实账号 INSERT 放进 migration、seed SQL 或其他 Git 跟踪文件。每行包含稳定的 `provider_state_key`、不带 `@` 的 `user_name`、`active/paused/archived` 状态和独立轮询参数；暂停账号不会删除其 cursor/high-water。
-
-表为空时保留单次 RSS 行为；表存在订阅行时，由 `active` 行按当前 provider 展开 sources，多个账号仍共享 `TWITTER` item identity 和 Telegram destination。旧的 `TWITTERAPI_IO_USER_ID` / `TWITTERAPI_IO_USER_NAME` 单账号 binding 仍兼容，但不再是推荐配置。
+通过 Cloudflare Dashboard 或一次性的 `wrangler d1 execute --remote --command` 事务更新运行数据，并同步维护 `source_routes`；不要把真实账号 INSERT 放进 migration、seed SQL 或其他 Git 跟踪文件。每个 connector 使用稳定 key、不带 `@` 的 `userName`、`active/paused/archived` 状态和独立轮询参数；暂停 connector 不会删除 cursor/high-water。
 
 可选调节项如下，默认每 5 分钟调用一次、每次 invocation 最多 1 页（每页最多 20 条）、不包含 replies：
 
@@ -130,31 +128,21 @@ npx wrangler secret put TWITTERAPI_IO_MAX_PAGES
 npx wrangler secret put TWITTERAPI_IO_INCLUDE_REPLIES
 ```
 
-`0004` migration 会从历史 Twitter URL 回填 tweet status ID alias。`0005` 只创建订阅表结构，不包含任何账号数据。每个订阅使用独立、稳定的 provider state；首次启用只按该账号的历史 URL 初始化 high-water，避免错误引用其他账号的最新 tweet。若单次达到 page budget，下一次到期 Cron 会从 D1 中保存的 cursor 续拉。
+每个 connector 使用独立、稳定的 checkpoint；若单次达到 page budget，下一次到期 Cron 会从 `source_connector_checkpoints` 中保存的 cursor 续拉。
 
 TwitterAPI.io adapter 兼容常见媒体字段，并在必要时从明确的 tweet photo 页面读取 Open Graph 图片。该 endpoint 官方不建议高频轮询，调整 cadence/page budget 前请先评估调用成本。[接口文档](https://docs.twitterapi.io/api-reference/endpoint/get_user_last_tweets)
 
-注意：一旦 TwitterAPI.io 已成功投递新 tweet，就不能再安全回滚到只理解 RSS provider GUID 的旧 Worker；此后应采用 roll-forward。订阅表为空时保持原 RSS 行为；选择 `twitterapi-io` 且存在 `active` 行但缺少 API key 时会显式报配置错误。选择 `nitter` 时不会读取或调用 TwitterAPI.io。
+选择 `twitterapi-io.user-timeline` 且缺少 API key 时会显式报配置错误。选择 `nitter.user-timeline` 时不会读取或调用 TwitterAPI.io。
 
 ### 4. 应用数据库迁移
 
 ```bash
-npm run db:migrate:remote
+npm run db:v2:migrate:remote
 ```
 
-`0003` 会从旧的 `pushed_items` 回填新模型：
+`migrations_v2` 创建规范化 topology、connector runtime/checkpoint、canonical content、provider observation 和 destination delivery 表。生产 Worker 只对 `DB_V2` 读写。
 
-- `sent` → `sent`
-- `failed` → `retry`
-- 语义不确定的 `pending` → `blocked`，避免自动重发造成重复
-
-`0004` 新增 provider handoff/pagination 状态与 `item_identity_aliases` 索引表，并从历史 Twitter URL 回填 tweet status ID，用于无漏推切换、可恢复分页和跨 provider 去重。
-
-`0005` 新增 `twitter_subscriptions`，仅管理订阅配置；真实订阅行属于运行数据，不进入 Git。
-
-迁移是 additive；观察期内旧表仍会保留。新 Worker 通过持久化 `updatedAt` 游标在投递前增量同步迁移后的旧记录，并在成功投递时同步更新旧 `pushed_items` sent ledger；每日 cleanup 继续按保留期清理旧表。因此，在 TwitterAPI.io 尚未实际投递新内容、且旧系统“GUID 全局唯一”的前提下，仍可回滚到旧 Worker。API 开始投递后须 roll-forward，因为旧 Worker 无法识别 API tweet ID 与 RSS provider GUID 的 alias 关系。不要在观察期内加入会产生跨来源同 GUID 的新源；旧 schema 无法表达这种 identity。
-
-如果切换过程要求尽可能接近零重复，应先暂停旧 Cron/Queue consumer，等待在途 invocation 结束，再应用迁移并部署。未暂停时仍存在旧、新 invocation 重叠的极小窗口。确认新版本稳定后，再通过独立迁移移除兼容桥和旧表。
+旧 `DB` 在观察期作为切换时点的只读快照保留，不再镜像新的抓取或投递状态。切换后的回滚不是自动的：若必须恢复旧代码，应先把 v2 新增数据重新同步到旧模型；正常故障处理采用 roll-forward。完成观察和备份后，再通过独立变更移除旧 binding、兼容 repository 与 `migrations`。
 
 ### 5. 验证并部署
 
@@ -195,11 +183,9 @@ npm run deploy:dry                # bundle + Workers 校验
 npm run check                     # 完整检查
 ```
 
-当前部署同时绑定旧 `DB` 与新 `DB_V2`。旧库仍是主读写库；每次 Cron
-或 Queue 批次完成后，Worker 会按持久化 watermark 将 topology、runtime、
-checkpoint、content identity、provider observation 和 delivery 状态幂等镜像到
-`DB_V2`。影子同步失败只记录 `schema_v2_shadow_failed`，不会阻断现有抓取或
-Telegram 投递。确认回填追平并完成切换前，不要删除旧数据库。
+当前部署同时绑定旧 `DB` 与规范化 `DB_V2`，但只有 `DB_V2` 承担生产读写。
+旧库是切换时点的观察快照，不会继续接收 shadow mirror；确认 v2 运行稳定、
+完成备份和保留期后，才能删除旧数据库及其兼容代码。
 
 ## 添加数据源
 

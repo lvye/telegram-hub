@@ -15,7 +15,6 @@ import {
 } from './ingestion/consumer';
 import { dispatchDueSources } from './ingestion/dispatcher';
 import { runCleanup } from './maintenance/cleanup';
-import { mirrorSchemaV2Shadow } from './persistence/schema-v2-shadow';
 
 export const UPDATE_CRON = '* * * * *';
 export const CLEANUP_CRON = '0 4 * * *';
@@ -43,12 +42,10 @@ export default {
 
 		if (task === 'cleanup') {
 			await runCleanup(env, config);
-			await mirrorSchemaV2Shadow(env, config);
 			return;
 		}
 
 		await runUpdate(env, config, controller.scheduledTime);
-		await mirrorSchemaV2Shadow(env, config);
 	},
 
 	async queue(batch, env) {
@@ -62,7 +59,6 @@ export default {
 		} else {
 			await consumeDeliveryBatch(batch as MessageBatch<DeliveryJob>, env, config);
 		}
-		await mirrorSchemaV2Shadow(env, config);
 	},
 
 	async fetch(request, env) {

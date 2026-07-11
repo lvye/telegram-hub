@@ -263,8 +263,12 @@ export function findDestination(
 	destinationKey: string,
 ): DeliveryDestinationConfig | null {
 	return config.destinations.find((destination) => (
-		destination.destinationKey === destinationKey
+		normalizeDestinationKey(destination.destinationKey) === normalizeDestinationKey(destinationKey)
 	)) ?? null;
+}
+
+export function normalizeDestinationKey(value: string): string {
+	return value.trim().toLowerCase().replaceAll('_', '-');
 }
 
 function requiredBinding(value: string | undefined, name: string): string {

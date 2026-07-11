@@ -1,6 +1,7 @@
-import type { AppConfig } from '../config';
+import { normalizeDestinationKey, type AppConfig } from '../config';
 import type { SourceCatalog, SourceDefinition } from '../domain/ingestion';
 import { DeliveryRepository } from '../persistence/delivery-repository';
+import type { IngestionRepository } from '../persistence/ingestion-repository';
 import { D1TwitterApiIoCheckpointStore } from '../persistence/source-checkpoint-store';
 import { SourceRuntimeStateRepository } from '../persistence/source-runtime-state-repository';
 import { IngestionService, type SourceIngestionResult } from './ingestion-service';
@@ -162,10 +163,10 @@ export function validateRuntimeTopology(
 		if (!destination.destinationKey.trim()) {
 			throw new Error('Destination key must not be empty');
 		}
-		if (destinationKeys.has(destination.destinationKey)) {
+		if (destinationKeys.has(normalizeDestinationKey(destination.destinationKey))) {
 			throw new Error(`Duplicate destination ${destination.destinationKey}`);
 		}
-		destinationKeys.add(destination.destinationKey);
+		destinationKeys.add(normalizeDestinationKey(destination.destinationKey));
 	}
 
 	const sourceIds = new Set<string>();
@@ -175,7 +176,7 @@ export function validateRuntimeTopology(
 			throw new Error(`Duplicate source ${source.sourceId}`);
 		}
 		sourceIds.add(source.sourceId);
-		if (!destinationKeys.has(source.destinationKey)) {
+		if (!destinationKeys.has(normalizeDestinationKey(source.destinationKey))) {
 			throw new Error(
 				`Unknown destination ${source.destinationKey} for source ${source.sourceId}`,
 			);
@@ -184,7 +185,7 @@ export function validateRuntimeTopology(
 }
 
 export function defaultSourceAdapterRegistry(
-	repository: DeliveryRepository,
+	repository: IngestionRepository,
 ): SourceAdapterRegistry {
 	const checkpoints = new D1TwitterApiIoCheckpointStore(repository);
 	return new SourceAdapterRegistry()

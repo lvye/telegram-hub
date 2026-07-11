@@ -78,6 +78,110 @@ describe('TwitterAPI.io client', () => {
 		}]);
 	});
 
+	it('extracts a photo URL and removes only its matching t.co link from the text', async () => {
+		vi.mocked(globalThis.fetch).mockResolvedValueOnce(pageResponse({
+			tweets: [{
+				id: '2075822127132131549',
+				url: 'https://x.com/MacroMargin/status/2075822127132131549',
+				text: '央行乐见升值，只防止非理性升值即可 https://t.co/squOUl7MIF',
+				createdAt: 'Thu Jul 09 08:00:00 +0000 2026',
+				author: { name: '宏观边际MacroMargin', userName: 'MacroMargin' },
+				extendedEntities: {
+					media: [{
+						type: 'photo',
+						url: 'https://t.co/squOUl7MIF',
+						media_url_https: 'https://pbs.twimg.com/media/Gv_example?format=jpg&name=large',
+					}],
+				},
+			}],
+		}));
+
+		const batch = await fetchBatch({ ...SOURCE, userName: 'MacroMargin' });
+
+		expect(batch.items).toMatchObject([{
+			title: '央行乐见升值，只防止非理性升值即可',
+			imageUrl: 'https://pbs.twimg.com/media/Gv_example?format=jpg&name=large',
+		}]);
+	});
+
+	it('supports snake-case media fields without removing unrelated links', async () => {
+		vi.mocked(globalThis.fetch).mockResolvedValueOnce(pageResponse({
+			tweets: [{
+				...tweet('4'),
+				text: '分析全文 https://example.com/report https://t.co/photo',
+				extended_entities: {
+					media: [{
+						type: 'photo',
+						url: 'https://t.co/photo',
+						media_url: 'http://pbs.twimg.com/media/Gv_snake_case.jpg',
+					}],
+				},
+			}],
+		}));
+
+		const batch = await fetchBatch();
+
+		expect(batch.items).toMatchObject([{
+			title: '分析全文 https://example.com/report',
+			imageUrl: 'https://pbs.twimg.com/media/Gv_snake_case.jpg',
+		}]);
+	});
+
+	it('keeps a t.co link when no direct image URL is available', async () => {
+		vi.mocked(globalThis.fetch).mockResolvedValueOnce(pageResponse({
+			tweets: [{
+				...tweet('5'),
+				text: '只有图片落地页 https://t.co/not-direct',
+				extendedEntities: {
+					media: [{
+						type: 'photo',
+						url: 'https://t.co/not-direct',
+						expanded_url: 'https://x.com/OpenAI/status/5/photo/1',
+					}],
+				},
+			}],
+		}));
+
+		const batch = await fetchBatch();
+
+		expect(batch.items).toMatchObject([{
+			title: '只有图片落地页 https://t.co/not-direct',
+			imageUrl: null,
+		}]);
+	});
+
+	it('resolves a documented URL entity photo page through its Open Graph image', async () => {
+		vi.mocked(globalThis.fetch)
+			.mockResolvedValueOnce(pageResponse({
+				tweets: [{
+					...tweet('6'),
+					text: '图片落地页 https://t.co/from-entity',
+					entities: {
+						urls: [{
+							url: 'https://t.co/from-entity',
+							expanded_url: 'https://twitter.com/OpenAI/status/6/photo/1',
+						}],
+					},
+				}],
+			}))
+			.mockResolvedValueOnce(new Response(
+				'<html><head><meta property="og:image" content="https://pbs.twimg.com/media/Gv_page.png:large"></head></html>',
+				{ headers: { 'content-type': 'text/html' } },
+			));
+
+		const batch = await fetchBatch();
+
+		expect(vi.mocked(globalThis.fetch)).toHaveBeenNthCalledWith(
+			2,
+			'https://twitter.com/OpenAI/status/6/photo/1',
+			expect.objectContaining({ redirect: 'follow' }),
+		);
+		expect(batch.items).toMatchObject([{
+			title: '图片落地页',
+			imageUrl: 'https://pbs.twimg.com/media/Gv_page.png:large',
+		}]);
+	});
+
 	it('follows cursors up to the configured page budget', async () => {
 		const cursors: Array<string | null> = [];
 		vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {

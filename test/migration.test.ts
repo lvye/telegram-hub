@@ -45,6 +45,10 @@ it('backfills legacy delivery states without losing item identity', async () => 
 		SELECT COUNT(*) AS count FROM twitter_subscriptions
 	`).first<{ count: number }>();
 	expect(subscriptionCount).toEqual({ count: 0 });
+	const runtimeStateCount = await env.MIGRATION_DB.prepare(`
+		SELECT COUNT(*) AS count FROM source_runtime_state
+	`).first<{ count: number }>();
+	expect(runtimeStateCount).toEqual({ count: 0 });
 
 	const result = await env.MIGRATION_DB.prepare(`
 		SELECT items.external_id, deliveries.status

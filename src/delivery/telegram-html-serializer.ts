@@ -9,6 +9,7 @@ import {
 
 export interface TelegramHtmlRenderOptions {
 	maxTextLength?: number;
+	preserveLineBreaks?: boolean;
 	transformText?: (text: string) => string;
 }
 
@@ -128,7 +129,9 @@ function renderNode(
 ): RenderedFragment {
 	if (isText(node)) {
 		const transformed = options.transformText?.(node.data) ?? node.data;
-		const text = transformed.replace(/\s+/gu, ' ');
+		const text = options.preserveLineBreaks
+			? normalizeTextWithLineBreaks(transformed)
+			: transformed.replace(/\s+/gu, ' ');
 		return plainFragment(text);
 	}
 	if (!isTag(node)) {
@@ -367,6 +370,14 @@ function plainFragment(text: string): RenderedFragment {
 
 function normalizeInlineText(value: string): string {
 	return value.replace(/\s+/gu, ' ').trim();
+}
+
+function normalizeTextWithLineBreaks(value: string): string {
+	return value
+		.replace(/\r\n?/gu, '\n')
+		.replace(/[\t\f\v ]+/gu, ' ')
+		.replace(/ *\n */gu, '\n')
+		.replace(/\n{3,}/gu, '\n\n');
 }
 
 function trimFragment(fragment: RenderedFragment): RenderedFragment {

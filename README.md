@@ -31,6 +31,8 @@ Worker 仅保留只读的 `GET /health`。生产环境不提供可触发推送�
 - ES Module Worker + TypeScript，binding 类型由 `wrangler types` 生成
 - 同一个 Worker 同时处理 `scheduled()`、`queue()` 和只读 `fetch()`
 - Source Runtime 将 `sourceId`、adapter、identity namespace 和 destination 分离；Cron 只通过 Catalog 与 adapter registry 调度来源
+- `source_runtime_state` 保存 provider-neutral 的 cadence、租约、连续失败和下次轮询状态；`source_ingestion_state` 只保存 provider checkpoint
+- 当前 Cron 仍按 source cadence 直接触发采集，并用 source lease 避免重叠执行；后续 Queue 化可以复用同一运行状态机
 - RSS 与 TwitterAPI.io adapter 都输出 provider-neutral `CanonicalItem`，统一 ingestion service 负责去重、入库和 checkpoint 提交
 - Telegram chat、parse mode 和 message format 属于独立 destination 配置，不再混入抓取 source
 - 使用 `(source_key, external_id)` 去重，不依赖发布时间水位

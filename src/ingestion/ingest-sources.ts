@@ -2,6 +2,7 @@ import type { AppConfig } from '../config';
 import type { SourceCatalog, SourceDefinition } from '../domain/ingestion';
 import { DeliveryRepository } from '../persistence/delivery-repository';
 import { D1TwitterApiIoCheckpointStore } from '../persistence/source-checkpoint-store';
+import { SourceRuntimeStateRepository } from '../persistence/source-runtime-state-repository';
 import { IngestionService, type SourceIngestionResult } from './ingestion-service';
 import { RssSourceAdapter } from './rss-source-adapter';
 import {
@@ -18,6 +19,8 @@ export interface IngestionRuntimeDependencies {
 	registry?: SourceAdapterRegistry;
 }
 
+const SOURCE_LEASE_SECONDS = 5 * 60;
+
 export async function ingestSources(
 	env: Env,
 	config: AppConfig,
@@ -32,11 +35,15 @@ export async function ingestSources(
 	const service = new IngestionService(repository, registry);
 	const sources = await catalog.list();
 	validateRuntimeTopology(config, sources);
+	const runtimeState = new SourceRuntimeStateRepository(env.DB);
+	await runtimeState.syncSources(sources, scheduledAt);
 	const dueSources = sources.filter((source) => isSourceDue(source, scheduledTime));
 	const results = await Promise.allSettled(
-		dueSources.map((source) => service.ingest(
+		dueSources.map((source) => ingestSourceWithLease(
 			source,
-			config.ingestion,
+			service,
+			runtimeState,
+			config,
 			scheduledAt,
 			runId,
 		)),
@@ -46,7 +53,7 @@ export async function ingestSources(
 
 	for (const result of results) {
 		if (result.status === 'fulfilled') {
-			completed.push(result.value);
+			if (result.value) completed.push(result.value);
 		} else {
 			failures.push(result.reason);
 		}
@@ -67,6 +74,77 @@ export async function ingestSources(
 	}
 
 	return completed;
+}
+
+async function ingestSourceWithLease(
+	source: SourceDefinition,
+	service: IngestionService,
+	runtimeState: SourceRuntimeStateRepository,
+	config: AppConfig,
+	scheduledAt: number,
+	runId: string,
+): Promise<SourceIngestionResult | null> {
+	const leaseToken = crypto.randomUUID();
+	const acquired = await runtimeState.acquireLease(
+		source.sourceId,
+		leaseToken,
+		scheduledAt,
+		SOURCE_LEASE_SECONDS,
+	);
+	if (!acquired) {
+		console.warn({
+			event: 'source_runtime_lease_busy',
+			runId,
+			sourceId: source.sourceId,
+			adapterKey: source.adapterKey,
+		});
+		return null;
+	}
+
+	const nextPollAt = scheduledAt + source.pollEveryMinutes * 60;
+	let result: SourceIngestionResult;
+	try {
+		result = await service.ingest(source, config.ingestion, scheduledAt, runId);
+	} catch (error) {
+		let recorded: boolean;
+		try {
+			recorded = await runtimeState.markFailed(
+				source.sourceId,
+				leaseToken,
+				nextPollAt,
+				'SOURCE_INGESTION_FAILED',
+				errorMessage(error),
+				scheduledAt,
+			);
+		} catch (stateError) {
+			throw new AggregateError(
+				[error, stateError],
+				`Failed to ingest and record runtime state for ${source.sourceId}`,
+			);
+		}
+		if (!recorded) {
+			throw new AggregateError(
+				[error, new Error(`Lost source runtime lease for ${source.sourceId}`)],
+				`Failed to ingest and record runtime state for ${source.sourceId}`,
+			);
+		}
+		throw error;
+	}
+
+	const recorded = await runtimeState.markSucceeded(
+		source.sourceId,
+		leaseToken,
+		nextPollAt,
+		scheduledAt,
+	);
+	if (!recorded) {
+		throw new Error(`Lost source runtime lease for ${source.sourceId}`);
+	}
+	return result;
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 export function isSourceDue(source: SourceDefinition, scheduledTime: number): boolean {

@@ -38,6 +38,7 @@ describe('scheduled handler', () => {
 	beforeEach(async () => {
 		sendBatch.mockClear();
 		await env.DB.batch([
+			env.DB.prepare('DELETE FROM source_runtime_state'),
 			env.DB.prepare('DELETE FROM deliveries'),
 			env.DB.prepare('DELETE FROM items'),
 			env.DB.prepare('DELETE FROM pushed_items'),

@@ -26,6 +26,7 @@ const SCHEDULED_TIME = Date.parse('2026-07-10T04:10:00.000Z');
 describe('Source Runtime', () => {
 	beforeEach(async () => {
 		await env.DB.batch([
+			env.DB.prepare('DELETE FROM source_runtime_state'),
 			env.DB.prepare('DELETE FROM deliveries'),
 			env.DB.prepare('DELETE FROM items'),
 			env.DB.prepare('DELETE FROM source_ingestion_state'),
@@ -88,9 +89,20 @@ describe('Source Runtime', () => {
 			destination_key: 'telegram:IT_HOME',
 			status: 'ready',
 		});
+		const runtime = await env.DB.prepare(`
+			SELECT status, next_poll_at, consecutive_failures, last_success_at
+			FROM source_runtime_state
+			WHERE source_id = 'test:alpha'
+		`).first();
+		expect(runtime).toEqual({
+			status: 'idle',
+			next_poll_at: Math.floor(SCHEDULED_TIME / 1_000) + 60,
+			consecutive_failures: 0,
+			last_success_at: Math.floor(SCHEDULED_TIME / 1_000),
+		});
 	});
 
-	it('fails an unregistered adapter before durable side effects', async () => {
+	it('records runtime failure for an unregistered adapter without content writes', async () => {
 		const source = { ...fakeSource('test:missing', 1, 'missing'), adapterKey: 'missing' };
 		const catalog: SourceCatalog = { list: async () => [source] };
 
@@ -110,6 +122,17 @@ describe('Source Runtime', () => {
 				(SELECT COUNT(*) FROM source_ingestion_state) AS checkpoints
 		`).first<{ checkpoints: number; deliveries: number; items: number }>();
 		expect(counts).toEqual({ checkpoints: 0, deliveries: 0, items: 0 });
+		const runtime = await env.DB.prepare(`
+			SELECT status, consecutive_failures, last_error_code, last_error
+			FROM source_runtime_state
+			WHERE source_id = 'test:missing'
+		`).first();
+		expect(runtime).toEqual({
+			status: 'backoff',
+			consecutive_failures: 1,
+			last_error_code: 'SOURCE_INGESTION_FAILED',
+			last_error: 'Unknown source adapter missing for source test:missing',
+		});
 	});
 
 	it('polls only due catalog entries', async () => {

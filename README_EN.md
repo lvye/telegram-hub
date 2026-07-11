@@ -147,9 +147,17 @@ npm run db:schema:v2:check
 npm run db:migrate:local
 npm run db:migrations:list:remote
 npm run db:migrate:remote
+npm run db:v2:migrations:list:remote
+npm run db:v2:migrate:remote
 npm run deploy:dry
 npm run check
 ```
+
+Deployments currently bind both the legacy `DB` and the normalized `DB_V2`.
+The legacy database remains authoritative. After each Cron or Queue batch, the
+Worker idempotently mirrors topology, runtime, checkpoints, content identities,
+provider observations, and deliveries using durable watermarks. Shadow failures
+are logged without interrupting ingestion or Telegram delivery.
 
 ## Adding a source
 

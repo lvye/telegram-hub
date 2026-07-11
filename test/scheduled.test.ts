@@ -29,6 +29,7 @@ describe('scheduled handler', () => {
 			timestamp: '2026-07-11T00:00:00.000Z',
 		},
 		DB: env.DB,
+		DB_V2: env.DB_V2,
 		IT_HOME_CHAT_ID: 'test-it-home-chat',
 		NITTER_BASE_URL: 'https://nitter.net/',
 		TELEGRAM_BOT_TOKEN: 'test-token',

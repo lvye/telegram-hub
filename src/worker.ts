@@ -15,6 +15,7 @@ import {
 } from './ingestion/consumer';
 import { dispatchDueSources } from './ingestion/dispatcher';
 import { runCleanup } from './maintenance/cleanup';
+import { mirrorSchemaV2Shadow } from './persistence/schema-v2-shadow';
 
 export const UPDATE_CRON = '* * * * *';
 export const CLEANUP_CRON = '0 4 * * *';
@@ -42,27 +43,26 @@ export default {
 
 		if (task === 'cleanup') {
 			await runCleanup(env, config);
+			await mirrorSchemaV2Shadow(env, config);
 			return;
 		}
 
 		await runUpdate(env, config, controller.scheduledTime);
+		await mirrorSchemaV2Shadow(env, config);
 	},
 
 	async queue(batch, env) {
+		const config = getConfig(env);
 		if (batch.queue === INGESTION_DLQ_NAME) {
 			await consumeIngestionDeadLetterBatch(batch as MessageBatch<IngestionJob>, env);
-			return;
+		} else if (batch.queue === INGESTION_QUEUE_NAME) {
+			await consumeIngestionBatch(batch as MessageBatch<IngestionJob>, env, config);
+		} else if (batch.queue === DELIVERY_DLQ_NAME) {
+			await consumeDeadLetterBatch(batch as MessageBatch<DeliveryJob>, env, config);
+		} else {
+			await consumeDeliveryBatch(batch as MessageBatch<DeliveryJob>, env, config);
 		}
-		if (batch.queue === INGESTION_QUEUE_NAME) {
-			await consumeIngestionBatch(batch as MessageBatch<IngestionJob>, env, getConfig(env));
-			return;
-		}
-		if (batch.queue === DELIVERY_DLQ_NAME) {
-			await consumeDeadLetterBatch(batch as MessageBatch<DeliveryJob>, env, getConfig(env));
-			return;
-		}
-
-		await consumeDeliveryBatch(batch as MessageBatch<DeliveryJob>, env, getConfig(env));
+		await mirrorSchemaV2Shadow(env, config);
 	},
 
 	async fetch(request, env) {

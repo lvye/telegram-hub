@@ -12,6 +12,8 @@
     "db:migrate:local": "wrangler d1 migrations apply rss --local",
     "db:migrate:remote": "wrangler d1 migrations apply rss --remote",
     "db:schema:v2:check": "vitest run test/schema-v2.test.ts",
+    "db:v2:migrations:list:remote": "wrangler d1 migrations list telegram-hub-prod --remote",
+    "db:v2:migrate:remote": "wrangler d1 migrations apply telegram-hub-prod --remote",
     "deploy": "wrangler deploy",
     "deploy:dry": "wrangler deploy --dry-run --outdir .wrangler/check",
     "dev": "wrangler dev",

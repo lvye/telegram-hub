@@ -80,6 +80,7 @@ function workerEnv(): Env {
 			timestamp: '2026-07-11T00:00:00.000Z',
 		},
 		DB: env.DB,
+		DB_V2: env.DB_V2,
 		INGESTION_QUEUE: env.INGESTION_QUEUE,
 		IT_HOME_CHAT_ID: 'test-it-home-chat',
 		NITTER_BASE_URL: 'https://nitter.net/',

@@ -10,6 +10,7 @@ const EXPECTED_TABLES = [
 	'item_identities',
 	'item_observations',
 	'message_deliveries',
+	'schema_mirror_cursors',
 	'source_connector_checkpoints',
 	'source_connector_state',
 	'source_connectors',

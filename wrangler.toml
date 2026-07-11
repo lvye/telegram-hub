@@ -48,6 +48,12 @@ binding = "DB"
 database_name = "rss"
 database_id = "<your-database-id>"
 
+[[d1_databases]]
+binding = "DB_V2"
+database_name = "telegram-hub-prod"
+database_id = "<your-v2-database-id>"
+migrations_dir = "migrations_v2"
+
 [[queues.producers]]
 binding = "TELEGRAM_DELIVERY_QUEUE"
 queue = "telegram-delivery"

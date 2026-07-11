@@ -189,9 +189,17 @@ npm run db:schema:v2:check        # v2 schema、约束与索引计划
 npm run db:migrate:local          # 当前数据库本地 migration
 npm run db:migrations:list:remote # 当前数据库远端 migration 状态
 npm run db:migrate:remote         # 当前数据库远端 migration（CI 使用）
+npm run db:v2:migrations:list:remote # v2 数据库远端 migration 状态
+npm run db:v2:migrate:remote      # v2 数据库远端 migration（CI 使用）
 npm run deploy:dry                # bundle + Workers 校验
 npm run check                     # 完整检查
 ```
+
+当前部署同时绑定旧 `DB` 与新 `DB_V2`。旧库仍是主读写库；每次 Cron
+或 Queue 批次完成后，Worker 会按持久化 watermark 将 topology、runtime、
+checkpoint、content identity、provider observation 和 delivery 状态幂等镜像到
+`DB_V2`。影子同步失败只记录 `schema_v2_shadow_failed`，不会阻断现有抓取或
+Telegram 投递。确认回填追平并完成切换前，不要删除旧数据库。
 
 ## 添加数据源
 

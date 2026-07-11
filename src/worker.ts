@@ -46,11 +46,18 @@ export default {
 		await consumeDeliveryBatch(batch, env, getConfig(env));
 	},
 
-	async fetch(request) {
+	async fetch(request, env) {
 		const url = new URL(request.url);
 
 		if (request.method === 'GET' && url.pathname === '/health') {
-			return Response.json({ service: 'telegram-hub', status: 'ok' });
+			return Response.json({
+				service: 'telegram-hub',
+				status: 'ok',
+				versionId: env.CF_VERSION_METADATA.id,
+				versionTag: env.CF_VERSION_METADATA.tag,
+			}, {
+				headers: { 'cache-control': 'no-store' },
+			});
 		}
 
 		return Response.json({ error: 'Not found' }, { status: 404 });

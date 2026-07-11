@@ -22,6 +22,11 @@ const ITEM: CanonicalItem = {
 describe('scheduled handler', () => {
 	const sendBatch = vi.fn(async (_messages: Parameters<Queue['sendBatch']>[0]) => undefined);
 	const workerEnv: Env = {
+		CF_VERSION_METADATA: {
+			id: 'test-version-id',
+			tag: 'test-version-tag',
+			timestamp: '2026-07-11T00:00:00.000Z',
+		},
 		DB: env.DB,
 		IT_HOME_CHAT_ID: 'test-it-home-chat',
 		TELEGRAM_BOT_TOKEN: 'test-token',

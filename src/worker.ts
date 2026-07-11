@@ -34,7 +34,7 @@ export default {
 			return;
 		}
 
-		await runUpdate(env, config);
+		await runUpdate(env, config, controller.scheduledTime);
 	},
 
 	async queue(batch, env) {
@@ -57,11 +57,15 @@ export default {
 	},
 } satisfies ExportedHandler<Env, DeliveryJob>;
 
-async function runUpdate(env: Env, config: ReturnType<typeof getConfig>): Promise<void> {
+async function runUpdate(
+	env: Env,
+	config: ReturnType<typeof getConfig>,
+	scheduledTime: number,
+): Promise<void> {
 	let ingestionError: unknown;
 
 	try {
-		await ingestSources(env, config);
+		await ingestSources(env, config, scheduledTime);
 	} catch (error) {
 		ingestionError = error;
 	}

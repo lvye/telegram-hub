@@ -10,6 +10,8 @@ required = [
   "TWITTER_CHAT_ID",
   "TWITTER_RSS_URL"
 ]
+# TwitterAPI.io bindings are optional so this version can be deployed before
+# the API key is provisioned. See .dev.vars.example and README.md.
 
 # Cron Triggers
 # Docs: https://developers.cloudflare.com/workers/platform/triggers/cron-triggers/

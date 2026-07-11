@@ -1,8 +1,9 @@
 import type { SourceConfig } from '../config';
 import type { DeliveryLease } from '../domain/delivery';
+import { renderHtmlForTelegram } from './telegram-html-serializer';
 
 export function formatTelegramMessage(delivery: DeliveryLease, source: SourceConfig): string {
-	if (source.parser === 'twitter') {
+	if (source.messageFormat === 'twitter') {
 		return [
 			escapeHtml(delivery.title ?? ''),
 			`${escapeHtml(delivery.author ?? 'Unknown User')}: ${formatLink(delivery.link, '查看原文')}`,
@@ -11,13 +12,26 @@ export function formatTelegramMessage(delivery: DeliveryLease, source: SourceCon
 
 	return [
 		delivery.title ? `<b>${escapeHtml(delivery.title)}</b>` : '',
-		delivery.description ? escapeHtml(delivery.description) : '',
+		delivery.formattedDescription
+			? renderHtmlForTelegram(delivery.formattedDescription, { maxTextLength: 400 }).html
+			: delivery.description ? escapeHtml(delivery.description) : '',
 		formatLink(delivery.link, '阅读更多'),
 	].filter(Boolean).join('\n\n');
 }
 
 function formatLink(link: string | null, label: string): string {
-	return link ? `<a href="${escapeAttribute(link)}">${escapeHtml(label)}</a>` : '';
+	const safeLink = safeHttpUrl(link);
+	return safeLink ? `<a href="${escapeAttribute(safeLink)}">${escapeHtml(label)}</a>` : '';
+}
+
+function safeHttpUrl(value: string | null): string | null {
+	if (!value?.trim()) return null;
+	try {
+		const url = new URL(value.trim());
+		return url.protocol === 'http:' || url.protocol === 'https:' ? value.trim() : null;
+	} catch {
+		return null;
+	}
 }
 
 function escapeHtml(value: string): string {

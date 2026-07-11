@@ -10,13 +10,40 @@ interface DispatchableRow {
 	delivery_id: number;
 }
 
-interface ExternalIdRow {
-	external_id: string;
+interface CandidateIdentityRow {
+	candidate_external_id: string;
 }
 
 interface MigrationBridgeCursorRow {
 	fence: number;
 	value: number;
+}
+
+interface SourceIngestionStateRow {
+	high_water_external_id: string | null;
+	initialized_at: number;
+	last_successful_poll_at: number | null;
+	next_cursor: string | null;
+	pending_high_water_external_id: string | null;
+}
+
+interface SourceProviderBootstrapRow {
+	high_water_external_id: string | null;
+	published_at: number;
+}
+
+export interface SourceIngestionState {
+	highWaterExternalId: string | null;
+	initializedAt: number;
+	lastSuccessfulPollAt: number | null;
+	nextCursor: string | null;
+	pendingHighWaterExternalId: string | null;
+}
+
+export interface SourceIngestionProgress {
+	highWaterExternalId: string | null;
+	nextCursor: string | null;
+	pendingHighWaterExternalId: string | null;
 }
 
 interface DeliveryStateRow {
@@ -36,6 +63,7 @@ interface DeliveryLeaseRow {
 	external_id: string;
 	title: string | null;
 	description: string | null;
+	formatted_description: string | null;
 	link: string | null;
 	author: string | null;
 	image_url: string | null;
@@ -109,6 +137,14 @@ export class DeliveryRepository {
 					description = excluded.description,
 					link = excluded.link,
 					published_at = excluded.published_at,
+					metadata_json = CASE
+						WHEN items.description IS NOT excluded.description THEN json_remove(
+							items.metadata_json,
+							'$.descriptionFormat',
+							'$.telegramHtmlDescription'
+						)
+						ELSE items.metadata_json
+					END,
 					updated_at = MAX(items.updated_at, excluded.updated_at)
 				WHERE excluded.updated_at > items.updated_at
 					AND (
@@ -228,6 +264,102 @@ export class DeliveryRepository {
 					OR (excluded.status = 'retry' AND deliveries.status = 'blocked')
 			`).bind(cursor.fence, cursor.fence, cursor.fence, cursor.value, cursor.fence),
 			this.db.prepare(`
+				WITH legacy AS (
+					SELECT
+						COALESCE(
+							NULLIF(TRIM(source), ''),
+							'__legacy_unknown__'
+						) AS source_key,
+						COALESCE(
+							NULLIF(TRIM(id), ''),
+							NULLIF(TRIM(link), ''),
+							'urn:telegram-hub:legacy-rowid:' || CAST(rowid AS TEXT)
+						) AS external_id,
+						link
+					FROM pushed_items INDEXED BY idx_pushed_items_updated_epoch
+					WHERE unixepoch(updatedAt) >= ?
+				)
+				INSERT OR IGNORE INTO item_identity_aliases (
+					source_key,
+					alias,
+					item_id
+				)
+				SELECT legacy.source_key, legacy.external_id, items.id
+				FROM legacy
+				CROSS JOIN items INDEXED BY sqlite_autoindex_items_1
+				WHERE items.source_key = legacy.source_key
+					AND items.external_id = legacy.external_id
+
+				UNION ALL
+
+				SELECT legacy.source_key, legacy.link, items.id
+				FROM legacy
+				CROSS JOIN items INDEXED BY sqlite_autoindex_items_1
+				WHERE legacy.source_key = 'TWITTER'
+					AND legacy.link IS NOT NULL
+					AND length(trim(legacy.link)) > 0
+					AND items.source_key = legacy.source_key
+					AND items.external_id = legacy.external_id
+			`).bind(cursor.value),
+			this.db.prepare(`
+				WITH RECURSIVE legacy AS (
+					SELECT
+						COALESCE(
+							NULLIF(TRIM(id), ''),
+							NULLIF(TRIM(link), ''),
+							'urn:telegram-hub:legacy-rowid:' || CAST(rowid AS TEXT)
+						) AS external_id,
+						link
+					FROM pushed_items INDEXED BY idx_pushed_items_updated_epoch
+					WHERE TRIM(source) = 'TWITTER'
+						AND unixepoch(updatedAt) >= ?
+						AND link IS NOT NULL
+						AND instr(link, '/status/') > 0
+				),
+				twitter_status_ids (
+					item_id,
+					source_key,
+					tweet_id,
+					rest
+				) AS (
+					SELECT
+						items.id,
+						items.source_key,
+						'',
+						substr(
+							legacy.link,
+							instr(legacy.link, '/status/') + length('/status/')
+						)
+					FROM legacy
+					CROSS JOIN items INDEXED BY sqlite_autoindex_items_1
+					WHERE items.source_key = 'TWITTER'
+						AND items.external_id = legacy.external_id
+
+					UNION ALL
+
+					SELECT
+						item_id,
+						source_key,
+						tweet_id || substr(rest, 1, 1),
+						substr(rest, 2)
+					FROM twitter_status_ids
+					WHERE length(rest) > 0
+						AND substr(rest, 1, 1) GLOB '[0-9]'
+				)
+				INSERT OR IGNORE INTO item_identity_aliases (
+					source_key,
+					alias,
+					item_id
+				)
+				SELECT source_key, 'twitter:' || tweet_id, item_id
+				FROM twitter_status_ids
+				WHERE length(tweet_id) > 0
+					AND (
+						length(rest) = 0
+						OR substr(rest, 1, 1) NOT GLOB '[0-9]'
+					)
+			`).bind(cursor.value),
+			this.db.prepare(`
 				INSERT INTO migration_bridge_state (key, value)
 				SELECT
 					'legacy_reconciled_through',
@@ -326,8 +458,33 @@ export class DeliveryRepository {
 			`).bind(...bindings));
 		}
 
-		const externalIds = [...new Set(items.map((item) => item.externalId))];
-		const idPlaceholders = externalIds.map(() => '?').join(', ');
+		const aliasPayload = items.map((item) => ({
+			externalId: item.externalId,
+			aliases: itemAliases(item),
+		}));
+		statements.push(this.db.prepare(`
+			INSERT OR IGNORE INTO item_identity_aliases (
+				source_key,
+				alias,
+				item_id,
+				created_at
+			)
+			SELECT
+				?,
+				CAST(candidate_alias.value AS TEXT),
+				items.id,
+				?
+			FROM json_each(?) AS candidate
+			JOIN json_each(candidate.value, '$.aliases') AS candidate_alias
+			CROSS JOIN items INDEXED BY sqlite_autoindex_items_1
+			WHERE items.source_key = ?
+				AND items.external_id = CAST(
+					json_extract(candidate.value, '$.externalId') AS TEXT
+				)
+				AND candidate_alias.type = 'text'
+				AND length(trim(CAST(candidate_alias.value AS TEXT))) > 0
+		`).bind(sourceKey, now, JSON.stringify(aliasPayload), sourceKey));
+
 		statements.push(this.db.prepare(`
 			INSERT OR IGNORE INTO deliveries (
 				item_id,
@@ -337,30 +494,232 @@ export class DeliveryRepository {
 				created_at,
 				updated_at
 			)
-			SELECT id, ?, 'ready', ?, ?, ?
-			FROM items
-			WHERE source_key = ? AND external_id IN (${idPlaceholders})
-		`).bind(destinationKey, now, now, now, sourceKey, ...externalIds));
+			SELECT items.id, ?, 'ready', ?, ?, ?
+			FROM json_each(?) AS candidate
+			CROSS JOIN items INDEXED BY sqlite_autoindex_items_1
+			WHERE items.source_key = ?
+				AND items.external_id = CAST(
+					json_extract(candidate.value, '$.externalId') AS TEXT
+				)
+				AND NOT EXISTS (
+				SELECT 1
+				FROM json_each(candidate.value, '$.aliases') AS candidate_alias
+				WHERE candidate_alias.type = 'text'
+					AND EXISTS (
+						SELECT 1
+						FROM item_identity_aliases AS existing
+							INDEXED BY sqlite_autoindex_item_identity_aliases_1
+						WHERE existing.source_key = ?
+							AND existing.alias = CAST(candidate_alias.value AS TEXT)
+							AND existing.item_id <> items.id
+					)
+			)
+		`).bind(
+			destinationKey,
+			now,
+			now,
+			now,
+			JSON.stringify(aliasPayload),
+			sourceKey,
+			sourceKey,
+		));
 
 		await this.db.batch(statements);
 	}
 
-	async findExistingExternalIds(sourceKey: string, externalIds: string[]): Promise<Set<string>> {
+	async findExistingItemIdentities(
+		sourceKey: string,
+		candidates: Array<Pick<ItemInput, 'externalId' | 'identityAliases'>>,
+	): Promise<Set<string>> {
 		assertNonEmpty(sourceKey, 'sourceKey');
-		const uniqueIds = [...new Set(externalIds)];
-		if (uniqueIds.length === 0) return new Set();
+		const uniqueCandidates = [...new Map(candidates.map((candidate) => [
+			candidate.externalId,
+			{
+				externalId: candidate.externalId,
+				aliases: itemAliases(candidate),
+			},
+		])).values()];
+		if (uniqueCandidates.length === 0) return new Set();
 
-		// Passing the candidate set as one JSON binding keeps this to a single D1
-		// query regardless of feed length and avoids SQLite's bind-parameter cap.
+		// Return the candidate identity rather than the stored identity. Alias
+		// lookups are exact and indexed, so a provider switch can reuse an existing
+		// item without an OR join that scans the source history.
 		const result = await this.db.prepare(`
-			SELECT items.external_id
+			SELECT DISTINCT
+				CAST(json_extract(candidate.value, '$.externalId') AS TEXT)
+					AS candidate_external_id
 			FROM json_each(?) AS candidate
-			CROSS JOIN items
-			WHERE items.source_key = ?
-				AND items.external_id = CAST(candidate.value AS TEXT)
-		`).bind(JSON.stringify(uniqueIds), sourceKey).all<ExternalIdRow>();
+			JOIN json_each(candidate.value, '$.aliases') AS candidate_alias
+			WHERE candidate_alias.type = 'text'
+				AND EXISTS (
+					SELECT 1
+					FROM item_identity_aliases AS existing
+					WHERE existing.source_key = ?
+						AND existing.alias = CAST(candidate_alias.value AS TEXT)
+				)
+		`).bind(JSON.stringify(uniqueCandidates), sourceKey).all<CandidateIdentityRow>();
 
-		return new Set(result.results.map((row) => row.external_id));
+		return new Set(result.results.map((row) => row.candidate_external_id));
+	}
+
+	async getOrCreateSourceProviderState(
+		sourceKey: string,
+		provider: string,
+		fallbackInitializedAt: number,
+		overlapSeconds = 60,
+		bootstrapUserName: string | null = null,
+	): Promise<SourceIngestionState> {
+		assertNonEmpty(sourceKey, 'sourceKey');
+		assertNonEmpty(provider, 'provider');
+		const existing = await this.findSourceProviderState(sourceKey, provider);
+		if (existing) return existing;
+
+		const bootstrap = await this.db.prepare(`
+			WITH latest_tweet AS (
+				SELECT aliases.alias, items.published_at
+				FROM item_identity_aliases AS aliases
+					INDEXED BY sqlite_autoindex_item_identity_aliases_1
+				JOIN items ON items.id = aliases.item_id
+				WHERE aliases.source_key = ?
+					AND aliases.alias GLOB 'twitter:[0-9]*'
+					AND (
+						? IS NULL
+						OR instr(
+							lower(COALESCE(items.link, '')),
+							'/' || lower(?) || '/status/'
+						) > 0
+					)
+				ORDER BY
+					(items.published_at IS NULL) ASC,
+					items.published_at DESC,
+					items.id DESC
+				LIMIT 1
+			),
+			latest_item AS (
+				SELECT MAX(published_at) AS published_at
+				FROM items
+				WHERE source_key = ?
+			)
+			SELECT
+				latest_tweet.alias AS high_water_external_id,
+				CASE
+					WHEN latest_tweet.alias IS NOT NULL
+						THEN COALESCE(latest_tweet.published_at, 0)
+					WHEN ? IS NULL
+						THEN COALESCE(latest_item.published_at, ?)
+					ELSE ?
+				END AS published_at
+			FROM latest_item
+			LEFT JOIN latest_tweet ON 1 = 1
+		`).bind(
+			sourceKey,
+			bootstrapUserName,
+			bootstrapUserName,
+			sourceKey,
+			bootstrapUserName,
+			fallbackInitializedAt,
+			fallbackInitializedAt,
+		).first<SourceProviderBootstrapRow>();
+		if (!bootstrap) throw new Error(`Could not bootstrap source ingestion state for ${sourceKey}`);
+
+		await this.db.prepare(`
+			INSERT OR IGNORE INTO source_ingestion_state (
+				source_key,
+				provider,
+				initialized_at,
+				high_water_external_id,
+				updated_at
+			)
+			VALUES (?, ?, ?, ?, unixepoch('now'))
+		`).bind(
+			sourceKey,
+			provider,
+			Math.max(0, bootstrap.published_at - overlapSeconds),
+			bootstrap.high_water_external_id,
+		).run();
+
+		const created = await this.findSourceProviderState(sourceKey, provider);
+		if (!created) throw new Error(`Missing source ingestion state for ${sourceKey}/${provider}`);
+		return created;
+	}
+
+	async getSourceProviderState(
+		sourceKey: string,
+		provider: string,
+	): Promise<SourceIngestionState> {
+		assertNonEmpty(sourceKey, 'sourceKey');
+		assertNonEmpty(provider, 'provider');
+		const state = await this.findSourceProviderState(sourceKey, provider);
+		if (!state) throw new Error(`Missing source ingestion state for ${sourceKey}/${provider}`);
+		return state;
+	}
+
+	private async findSourceProviderState(
+		sourceKey: string,
+		provider: string,
+	): Promise<SourceIngestionState | null> {
+		const state = await this.db.prepare(`
+			SELECT
+				initialized_at,
+				last_successful_poll_at,
+				high_water_external_id,
+				next_cursor,
+				pending_high_water_external_id
+			FROM source_ingestion_state
+			WHERE source_key = ? AND provider = ?
+		`).bind(sourceKey, provider).first<SourceIngestionStateRow>();
+		if (!state) return null;
+
+		return {
+			highWaterExternalId: state.high_water_external_id,
+			initializedAt: state.initialized_at,
+			lastSuccessfulPollAt: state.last_successful_poll_at,
+			nextCursor: state.next_cursor,
+			pendingHighWaterExternalId: state.pending_high_water_external_id,
+		};
+	}
+
+	async updateSourceIngestionProgress(
+		sourceKey: string,
+		provider: string,
+		previous: SourceIngestionState,
+		progress: SourceIngestionProgress,
+		now = currentUnixTime(),
+	): Promise<void> {
+		assertNonEmpty(sourceKey, 'sourceKey');
+		assertNonEmpty(provider, 'provider');
+		if ((progress.nextCursor === null) !== (progress.pendingHighWaterExternalId === null)) {
+			throw new Error('Source continuation cursor and pending high-water must be set together');
+		}
+
+		const result = await this.db.prepare(`
+			UPDATE source_ingestion_state
+			SET
+				high_water_external_id = ?,
+				next_cursor = ?,
+				pending_high_water_external_id = ?,
+				last_successful_poll_at = ?,
+				updated_at = ?
+			WHERE source_key = ?
+				AND provider = ?
+				AND high_water_external_id IS ?
+				AND next_cursor IS ?
+				AND pending_high_water_external_id IS ?
+		`).bind(
+			progress.highWaterExternalId,
+			progress.nextCursor,
+			progress.pendingHighWaterExternalId,
+			now,
+			now,
+			sourceKey,
+			provider,
+			previous.highWaterExternalId,
+			previous.nextCursor,
+			previous.pendingHighWaterExternalId,
+		).run();
+		if ((result.meta.changes ?? 0) !== 1) {
+			throw new Error(`Source ingestion state changed concurrently for ${sourceKey}/${provider}`);
+		}
 	}
 
 	async listDispatchable(now = currentUnixTime(), limit = 100): Promise<DispatchableDelivery[]> {
@@ -427,6 +786,12 @@ export class DeliveryRepository {
 					i.external_id,
 					i.title,
 					i.description,
+					CASE
+						WHEN json_extract(i.metadata_json, '$.descriptionFormat') = 'telegram-html-v1'
+							AND json_type(i.metadata_json, '$.telegramHtmlDescription') = 'text'
+						THEN json_extract(i.metadata_json, '$.telegramHtmlDescription')
+						ELSE NULL
+					END AS formatted_description,
 					i.link,
 					i.author,
 					i.image_url,
@@ -713,11 +1078,21 @@ function mapLease(row: DeliveryLeaseRow): DeliveryLease {
 		externalId: row.external_id,
 		title: row.title,
 		description: row.description,
+		formattedDescription: row.formatted_description,
 		link: row.link,
 		author: row.author,
 		imageUrl: row.image_url,
 		publishedAt: row.published_at,
 	};
+}
+
+function itemAliases(
+	item: Pick<ItemInput, 'externalId' | 'identityAliases'>,
+): string[] {
+	return [...new Set([
+		item.externalId,
+		...(item.identityAliases ?? []),
+	].map((alias) => alias.trim()).filter(Boolean))];
 }
 
 function assertNonEmpty(value: string, name: string): void {

@@ -28,9 +28,23 @@ it('backfills legacy delivery states without losing item identity', async () => 
 				id, title, link, source, status, createdAt, updatedAt, sentAt
 			) VALUES (?, ?, ?, ?, 'sent', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		`).bind(null, 'Missing ID item', 'https://example.com/legacy-link', 'SOURCE_A'),
+		env.MIGRATION_DB.prepare(`
+			INSERT INTO pushed_items (
+				id, title, link, source, status, createdAt, updatedAt, sentAt
+			) VALUES (?, ?, ?, ?, 'sent', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		`).bind(
+			'legacy-twitter-guid',
+			'Legacy tweet',
+			'https://twitter.com/OpenAI/status/2070555272230384038?ref=rss',
+			'TWITTER',
+		),
 	]);
 
 	await applyD1Migrations(env.MIGRATION_DB, env.TEST_MIGRATIONS);
+	const subscriptionCount = await env.MIGRATION_DB.prepare(`
+		SELECT COUNT(*) AS count FROM twitter_subscriptions
+	`).first<{ count: number }>();
+	expect(subscriptionCount).toEqual({ count: 0 });
 
 	const result = await env.MIGRATION_DB.prepare(`
 		SELECT items.external_id, deliveries.status
@@ -42,9 +56,18 @@ it('backfills legacy delivery states without losing item identity', async () => 
 	expect(result.results).toEqual([
 		{ external_id: 'failed-guid', status: 'retry' },
 		{ external_id: 'https://example.com/legacy-link', status: 'sent' },
+		{ external_id: 'legacy-twitter-guid', status: 'sent' },
 		{ external_id: 'pending-guid', status: 'blocked' },
 		{ external_id: 'sent-guid', status: 'sent' },
 	]);
+	const twitterAlias = await env.MIGRATION_DB.prepare(`
+		SELECT item_identity_aliases.alias
+		FROM item_identity_aliases
+		JOIN items ON items.id = item_identity_aliases.item_id
+		WHERE items.external_id = 'legacy-twitter-guid'
+			AND item_identity_aliases.alias = 'twitter:2070555272230384038'
+	`).first<{ alias: string }>();
+	expect(twitterAlias).toEqual({ alias: 'twitter:2070555272230384038' });
 
 	// Simulate the old Worker writing after 0003 was applied but before the new
 	// version became active. Runtime reconciliation must close this cutover gap.
@@ -65,6 +88,45 @@ it('backfills legacy delivery states without losing item identity', async () => 
 	`).bind('SOURCE_A', 'post-migration-guid').first<{ status: string }>();
 	expect(reconciled).toEqual({ status: 'sent' });
 	await expect(repository.reconcileLegacyRows()).resolves.toBe(0);
+
+	// A rollback Worker only knows the plain description. If it wins a later
+	// update, the new Worker must not retain stale rich HTML for that item.
+	const richItem: ItemInput = {
+		externalId: 'legacy-rich-guid',
+		title: 'Rich before rollback',
+		description: 'Old plain body',
+		link: 'https://example.com/legacy-rich',
+		author: null,
+		imageUrl: null,
+		publishedAt: now,
+		metadata: {
+			provider: 'rss',
+			descriptionFormat: 'telegram-html-v1',
+			telegramHtmlDescription: '<b>Old rich body</b>',
+		},
+	};
+	await repository.upsertItems('SOURCE_A', 'telegram:SOURCE_A', [richItem], now);
+	await env.MIGRATION_DB.prepare(`
+		INSERT INTO pushed_items (
+			id, title, description, link, source, status, createdAt, updatedAt, sentAt
+		) VALUES (?, ?, ?, ?, ?, 'sent', CURRENT_TIMESTAMP, datetime('now', '+1 second'), CURRENT_TIMESTAMP)
+	`).bind(
+		richItem.externalId,
+		'Plain rollback update',
+		'New plain body',
+		richItem.link,
+		'SOURCE_A',
+	).run();
+	await repository.reconcileLegacyRows();
+	const reconciledRich = await env.MIGRATION_DB.prepare(`
+		SELECT description, metadata_json
+		FROM items
+		WHERE source_key = 'SOURCE_A' AND external_id = 'legacy-rich-guid'
+	`).first<{ description: string; metadata_json: string }>();
+	expect(reconciledRich).toEqual({
+		description: 'New plain body',
+		metadata_json: '{"provider":"rss"}',
+	});
 
 	// If the old Worker claims an item while the new Worker has already created
 	// its delivery, ambiguous legacy pending must win until the old outcome is

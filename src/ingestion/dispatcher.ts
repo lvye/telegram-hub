@@ -1,8 +1,8 @@
 import type { AppConfig } from '../config';
 import type { IngestionJob } from '../domain/ingestion';
-import { SourceRuntimeStateRepository } from '../persistence/source-runtime-state-repository';
+import { SourceRuntimeStateRepositoryV2 } from '../persistence/source-runtime-state-repository-v2';
 import { validateRuntimeTopology } from './ingest-sources';
-import { D1SourceCatalog } from './source-catalog';
+import { D1SourceCatalogV2 } from './source-catalog-v2';
 
 const QUEUE_SEND_LIMIT = 100;
 
@@ -12,10 +12,10 @@ export async function dispatchDueSources(
 	scheduledTime = Date.now(),
 ): Promise<number> {
 	const scheduledAt = Math.floor(scheduledTime / 1_000);
-	const catalog = new D1SourceCatalog(env.DB, config);
+	const catalog = new D1SourceCatalogV2(env.DB_V2, config);
 	const sources = await catalog.list();
 	validateRuntimeTopology(config, sources);
-	const runtime = new SourceRuntimeStateRepository(env.DB);
+	const runtime = new SourceRuntimeStateRepositoryV2(env.DB_V2);
 	await runtime.syncSources(sources, scheduledAt);
 	const [deadRecovered, blockedRecovered] = await Promise.all([
 		runtime.recoverDeadSources(scheduledAt, config.ingestion.deadRecoverySeconds),

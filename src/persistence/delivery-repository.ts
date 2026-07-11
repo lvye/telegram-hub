@@ -393,6 +393,7 @@ export class DeliveryRepository {
 		destinationKey: string,
 		items: CanonicalItem[],
 		now = currentUnixTime(),
+		_sourceId?: string,
 	): Promise<void> {
 		assertNonEmpty(sourceKey, 'sourceKey');
 		assertNonEmpty(destinationKey, 'destinationKey');
@@ -561,6 +562,7 @@ export class DeliveryRepository {
 		destinationKey: string,
 		candidates: Array<Pick<CanonicalItem, 'externalId' | 'identityAliases'>>,
 		now = currentUnixTime(),
+		_sourceId?: string,
 	): Promise<number> {
 		assertNonEmpty(sourceKey, 'sourceKey');
 		assertNonEmpty(destinationKey, 'destinationKey');

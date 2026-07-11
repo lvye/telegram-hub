@@ -1,11 +1,11 @@
 import type { AppConfig } from '../config';
 import type { DeliveryJob } from '../domain/delivery';
-import { DeliveryRepository } from '../persistence/delivery-repository';
+import { DeliveryRepositoryV2 } from '../persistence/delivery-repository-v2';
 
 const QUEUE_SEND_LIMIT = 100;
 
 export async function dispatchReadyDeliveries(env: Env, config: AppConfig): Promise<number> {
-	const repository = new DeliveryRepository(env.DB);
+	const repository = new DeliveryRepositoryV2(env.DB_V2);
 	const dispatchable = await repository.listDispatchable(
 		undefined,
 		config.delivery.dispatchBatchSize,

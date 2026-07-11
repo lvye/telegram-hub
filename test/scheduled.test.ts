@@ -1,9 +1,11 @@
 import { env } from 'cloudflare:workers';
 import { createScheduledController } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getConfig } from '../src/config';
 import type { CanonicalItem } from '../src/domain/ingestion';
-import { DeliveryRepository } from '../src/persistence/delivery-repository';
+import { DeliveryRepositoryV2 } from '../src/persistence/delivery-repository-v2';
 import worker, { CLEANUP_CRON, UPDATE_CRON } from '../src/worker';
+import { resetV2, seedDefaultV2Topology } from './v2-fixtures';
 
 const ITEM: CanonicalItem = {
 	externalId: 'cleanup-item',
@@ -43,13 +45,12 @@ describe('scheduled handler', () => {
 	beforeEach(async () => {
 		sendDeliveryBatch.mockClear();
 		sendIngestionBatch.mockClear();
-		await env.DB.batch([
-			env.DB.prepare('DELETE FROM source_runtime_state'),
-			env.DB.prepare('DELETE FROM deliveries'),
-			env.DB.prepare('DELETE FROM items'),
-			env.DB.prepare('DELETE FROM pushed_items'),
-			env.DB.prepare('DELETE FROM twitter_subscriptions'),
-		]);
+		await resetV2(env.DB_V2);
+		await seedDefaultV2Topology(
+			env.DB_V2,
+			getConfig(workerEnv),
+			Math.floor(Date.parse('2026-07-10T04:00:00Z') / 1_000),
+		);
 	});
 
 	it('enqueues one job per due source without fetching in the cron invocation', async () => {
@@ -64,10 +65,12 @@ describe('scheduled handler', () => {
 		expect(sendIngestionBatch.mock.calls[0][0]).toHaveLength(2);
 		expect(sendDeliveryBatch).not.toHaveBeenCalled();
 		expect(globalThis.fetch).not.toHaveBeenCalled();
-		const states = await env.DB.prepare(`
-			SELECT source_id, status, queue_token
-			FROM source_runtime_state
-			ORDER BY source_id
+		const states = await env.DB_V2.prepare(`
+			SELECT connectors.connector_key AS source_id,
+				state.state AS status, state.claim_token AS queue_token
+			FROM source_connector_state AS state
+			JOIN source_connectors AS connectors ON connectors.id = state.connector_id
+			ORDER BY connectors.connector_key
 		`).all<{ queue_token: string; source_id: string; status: string }>();
 		expect(states.results).toEqual([
 			{ source_id: 'rss:it_home', status: 'queued', queue_token: expect.any(String) },
@@ -86,10 +89,11 @@ describe('scheduled handler', () => {
 		});
 
 		await expect(worker.scheduled(controller, workerEnv)).rejects.toThrow('queue unavailable');
-		const states = await env.DB.prepare(`
-			SELECT status, queue_token
-			FROM source_runtime_state
-			ORDER BY source_id
+		const states = await env.DB_V2.prepare(`
+			SELECT state.state AS status, state.claim_token AS queue_token
+			FROM source_connector_state AS state
+			JOIN source_connectors AS connectors ON connectors.id = state.connector_id
+			ORDER BY connectors.connector_key
 		`).all<{ queue_token: string | null; status: string }>();
 		expect(states.results).toEqual([
 			{ status: 'idle', queue_token: null },
@@ -98,8 +102,8 @@ describe('scheduled handler', () => {
 	});
 
 	it('runs only compaction for the cleanup cron', async () => {
-		const repository = new DeliveryRepository(env.DB);
-		await repository.upsertItems('IT_HOME', 'telegram:IT_HOME', [ITEM], 1_000);
+		const repository = new DeliveryRepositoryV2(env.DB_V2);
+		await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [ITEM], 1_000);
 		const [{ deliveryId }] = await repository.listDispatchable(1_000);
 		await repository.acquireLease(deliveryId, 'cleanup-lease', 1_000);
 		await repository.markSent(deliveryId, 'cleanup-lease', '1', 1_001);
@@ -113,7 +117,9 @@ describe('scheduled handler', () => {
 		expect(sendDeliveryBatch).not.toHaveBeenCalled();
 		expect(sendIngestionBatch).not.toHaveBeenCalled();
 		expect(globalThis.fetch).not.toHaveBeenCalled();
-		const item = await env.DB.prepare('SELECT description, image_url, metadata_json FROM items').first<{
+		const item = await env.DB_V2.prepare(`
+			SELECT description, image_url, metadata_json FROM content_items
+		`).first<{
 			description: string | null;
 			image_url: string | null;
 			metadata_json: string;

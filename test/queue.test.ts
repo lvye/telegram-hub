@@ -7,8 +7,10 @@ import {
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DeliveryJob } from '../src/domain/delivery';
 import type { CanonicalItem } from '../src/domain/ingestion';
-import { DeliveryRepository } from '../src/persistence/delivery-repository';
+import { getConfig } from '../src/config';
+import { DeliveryRepositoryV2 } from '../src/persistence/delivery-repository-v2';
 import worker from '../src/worker';
+import { resetV2, seedDefaultV2Topology, seedV2Destination } from './v2-fixtures';
 
 const ITEM: CanonicalItem = {
 	externalId: 'queue-item',
@@ -21,13 +23,11 @@ const ITEM: CanonicalItem = {
 };
 
 describe('delivery queue consumer', () => {
-	const repository = new DeliveryRepository(env.DB);
+	const repository = new DeliveryRepositoryV2(env.DB_V2);
 
 	beforeEach(async () => {
-		await env.DB.batch([
-			env.DB.prepare('DELETE FROM deliveries'),
-			env.DB.prepare('DELETE FROM items'),
-		]);
+		await resetV2(env.DB_V2);
+		await seedDefaultV2Topology(env.DB_V2, getConfig(env), 1_700_000_000);
 	});
 
 	it('marks a successful Telegram delivery sent and explicitly acks', async () => {
@@ -38,9 +38,9 @@ describe('delivery queue consumer', () => {
 		}));
 
 		const { result } = await dispatch(deliveryId);
-		const row = await env.DB.prepare(`
-			SELECT status, provider_message_id
-			FROM deliveries
+		const row = await env.DB_V2.prepare(`
+			SELECT state AS status, provider_message_id
+			FROM message_deliveries
 			WHERE id = ?
 		`).bind(deliveryId).first<{ status: string; provider_message_id: string | null }>();
 
@@ -86,7 +86,8 @@ describe('delivery queue consumer', () => {
 	});
 
 	it('marks an unknown destination dead without calling Telegram', async () => {
-		await repository.upsertItems('UNKNOWN', 'telegram:MISSING', [{
+		await seedV2Destination(env.DB_V2, 'telegram:MISSING', 1_700_000_000);
+		await repository.upsertItems('rss:unknown', 'telegram:MISSING', [{
 			...ITEM,
 			externalId: 'unknown-destination-item',
 		}]);
@@ -97,9 +98,9 @@ describe('delivery queue consumer', () => {
 
 		expect(result.explicitAcks).toEqual(['queue-message-1']);
 		expect(globalThis.fetch).not.toHaveBeenCalled();
-		const row = await env.DB.prepare(`
-			SELECT status, last_error_code
-			FROM deliveries
+		const row = await env.DB_V2.prepare(`
+			SELECT state AS status, last_error_code
+			FROM message_deliveries
 			WHERE id = ?
 		`).bind(delivery.deliveryId).first<{
 			last_error_code: string | null;
@@ -132,8 +133,8 @@ describe('delivery queue consumer', () => {
 
 	it('marks an application-exhausted dead-letter delivery dead', async () => {
 		const deliveryId = await seedDelivery(repository);
-		await env.DB.prepare(`
-			UPDATE deliveries
+		await env.DB_V2.prepare(`
+			UPDATE message_deliveries
 			SET attempt_count = 5
 			WHERE id = ?
 		`).bind(deliveryId).run();
@@ -181,8 +182,8 @@ describe('delivery queue consumer', () => {
 	});
 });
 
-async function seedDelivery(repository: DeliveryRepository): Promise<number> {
-	await repository.upsertItems('IT_HOME', 'telegram:IT_HOME', [ITEM]);
+async function seedDelivery(repository: DeliveryRepositoryV2): Promise<number> {
+	await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [ITEM]);
 	const [delivery] = await repository.listDispatchable();
 	await repository.markQueued([delivery.deliveryId]);
 	return delivery.deliveryId;

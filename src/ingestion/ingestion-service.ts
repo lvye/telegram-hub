@@ -3,7 +3,7 @@ import type {
 	IngestionOptions,
 	SourceDefinition,
 } from '../domain/ingestion';
-import { DeliveryRepository } from '../persistence/delivery-repository';
+import type { IngestionRepository } from '../persistence/ingestion-repository';
 import { SourceAdapterRegistry } from './source-adapter-registry';
 
 export interface SourceIngestionResult {
@@ -14,7 +14,7 @@ export interface SourceIngestionResult {
 
 export class IngestionService {
 	constructor(
-		private readonly repository: DeliveryRepository,
+		private readonly repository: IngestionRepository,
 		private readonly adapters: SourceAdapterRegistry,
 	) {}
 
@@ -52,11 +52,15 @@ export class IngestionService {
 				source.identityNamespace,
 				source.destinationKey,
 				items,
+				scheduledAt,
+				source.sourceId,
 			);
 			const routedExisting = await this.repository.ensureDeliveriesForCandidates(
 				source.identityNamespace,
 				source.destinationKey,
 				deliveryCandidates,
+				scheduledAt,
+				source.sourceId,
 			);
 			if (batch.checkpoint) {
 				await batch.checkpoint.commit(scheduledAt);

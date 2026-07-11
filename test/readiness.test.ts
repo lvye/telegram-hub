@@ -1,21 +1,20 @@
 import { env } from 'cloudflare:workers';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getConfig } from '../src/config';
-import { D1SourceCatalog } from '../src/ingestion/source-catalog';
-import { SourceRuntimeStateRepository } from '../src/persistence/source-runtime-state-repository';
+import { D1SourceCatalogV2 } from '../src/ingestion/source-catalog-v2';
+import { SourceRuntimeStateRepositoryV2 } from '../src/persistence/source-runtime-state-repository-v2';
 import worker from '../src/worker';
+import { resetV2, seedDefaultV2Topology } from './v2-fixtures';
 
 const NOW = Math.floor(Date.parse('2026-07-10T04:10:00Z') / 1_000);
 
 describe('source readiness', () => {
-	const runtime = new SourceRuntimeStateRepository(env.DB);
+	const runtime = new SourceRuntimeStateRepositoryV2(env.DB_V2);
 
 	beforeEach(async () => {
 		vi.spyOn(Date, 'now').mockReturnValue(NOW * 1_000);
-		await env.DB.batch([
-			env.DB.prepare('DELETE FROM source_runtime_state'),
-			env.DB.prepare('DELETE FROM twitter_subscriptions'),
-		]);
+		await resetV2(env.DB_V2);
+		await seedDefaultV2Topology(env.DB_V2, getConfig(workerEnv()), NOW);
 	});
 
 	it('reports ready while active sources are inside their startup grace period', async () => {
@@ -54,7 +53,11 @@ describe('source readiness', () => {
 	it('reports a source that stopped succeeding after its cadence threshold', async () => {
 		await syncSources();
 		await runtime.acquireLease('rss:it_home', 'lease', NOW, 300);
-		await runtime.markSucceeded('rss:it_home', 'lease', NOW + 60, NOW);
+		await expect(runtime.markSucceeded('rss:it_home', 'lease', NOW + 60, NOW)).resolves.toBe(true);
+		expect(await runtime.get('rss:it_home')).toMatchObject({
+			lastSuccessAt: NOW,
+			pollEverySeconds: 60,
+		});
 
 		const config = getConfig(workerEnv());
 		config.ingestion.readinessMinimumSeconds = 60;
@@ -67,7 +70,7 @@ describe('source readiness', () => {
 
 	async function syncSources() {
 		const config = getConfig(workerEnv());
-		const sources = await new D1SourceCatalog(env.DB, config).list();
+		const sources = await new D1SourceCatalogV2(env.DB_V2, config).list();
 		await runtime.syncSources(sources, NOW);
 	}
 });

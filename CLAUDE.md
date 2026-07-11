@@ -30,7 +30,7 @@ npx wrangler d1 migrations apply rss --remote
 - `src/worker.ts` is the only runtime entry point. It routes exact Cron expressions, Queue names, and the read-only health endpoint.
 - `src/ingestion/` contains the Source Catalog, adapter registry, provider adapters, and provider-neutral ingestion service. Adapters emit `CanonicalItem`; the service owns identity lookup, persistence, and checkpoint commits. Twitter provider changes must preserve RSS GUID aliases, the latest-known-identity handoff high-water, and resumable API pagination. It never sends Telegram messages.
 - A runtime source separates `sourceId`, `adapterKey`, identity namespace, destination key, and cadence. Telegram chat IDs and formatting belong to destination configuration, never adapter inputs.
-- `source_runtime_state` owns provider-neutral catalog metadata, scheduling, execution leases, and failure counters. `source_ingestion_state` owns provider-specific checkpoints. The current Cron path remains the due-source authority until ingestion Queue cutover.
+- `source_runtime_state` owns provider-neutral catalog metadata, queue claims, scheduling, execution leases, and failure counters. `source_ingestion_state` owns provider-specific checkpoints. Cron only claims due sources and publishes one job per source; ingestion Queue consumers perform network work.
 - `src/persistence/delivery-repository.ts` owns all D1 state transitions and leases.
 - `src/delivery/dispatcher.ts` publishes delivery IDs; `consumer.ts` acquires a lease and calls the Telegram adapter.
 - `src/parsers/` interprets feed-specific data. Adapters convert parser output to canonical items; final Telegram formatting and rich-text revalidation live in the delivery layer.
@@ -43,6 +43,7 @@ npx wrangler d1 migrations apply rss --remote
 - Ingestion treats a known identity as immutable. RSS scans the byte-bounded feed and writes at most 50 unseen items per run; the API adapter uses a bounded page budget plus a durable continuation cursor. Both query known aliases once so compaction stays compacted and delayed items can drain across runs.
 - Provider switches must preserve `source_key`, canonicalize provider-specific identity, and bootstrap `source_ingestion_state` from a known identity rather than a wall-clock-only cutover.
 - Source execution must acquire a `sourceId` lease and conditionally finish with the same token. A stale invocation must not overwrite a newer attempt's runtime result.
+- Ingestion Queue jobs must carry the D1 queue token. Retryable source failures preserve that token while scheduling `Retry-After`/exponential-jitter delay; expired claims and leases are recoverable, and permanent HTTP failures become `blocked`.
 - Queue delivery is at-least-once. A consumer must acquire a D1 lease before calling Telegram and must make terminal transitions conditional on that lease token.
 - Respect both `available_at` and `lease_expires_at`; duplicate jobs must not bypass backoff or steal an active lease.
 - Retryable Telegram failures are rescheduled with Queue delay. Permanent failures become `dead`. Cloudflare's native DLQ handles infrastructure failures; its consumer preserves active leases and returns non-exhausted work to D1 `retry`.

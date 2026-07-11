@@ -28,6 +28,12 @@ const OPTIONS: AppConfig['ingestion'] = {
 	feedTimeoutMs: 1_000,
 	maxFeedBytes: 100_000,
 	maxItemsPerSource: 50,
+	leaseSeconds: 300,
+	queueClaimSeconds: 300,
+	deadRecoverySeconds: 21_600,
+	blockedRecoverySeconds: 3_600,
+	readinessMinimumSeconds: 600,
+	readinessPollMultiplier: 3,
 };
 
 describe('TwitterAPI.io client', () => {

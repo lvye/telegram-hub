@@ -27,11 +27,15 @@ crons = [
 
 [observability]
 enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = true
 head_sampling_rate = 1
 
 [observability.traces]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.1
 
 [[d1_databases]]
 binding = "DB"
@@ -41,6 +45,10 @@ database_id = "<your-database-id>"
 [[queues.producers]]
 binding = "TELEGRAM_DELIVERY_QUEUE"
 queue = "telegram-delivery"
+
+[[queues.producers]]
+binding = "INGESTION_QUEUE"
+queue = "source-ingestion"
 
 [[queues.consumers]]
 queue = "telegram-delivery"
@@ -53,6 +61,22 @@ max_concurrency = 1
 
 [[queues.consumers]]
 queue = "telegram-delivery-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 1
+
+[[queues.consumers]]
+queue = "source-ingestion"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+retry_delay = 30
+dead_letter_queue = "source-ingestion-dlq"
+max_concurrency = 5
+
+[[queues.consumers]]
+queue = "source-ingestion-dlq"
 max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 3

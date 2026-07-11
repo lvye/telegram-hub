@@ -14,9 +14,21 @@ export default defineConfig({
           MIGRATION_DB: '00000000-0000-0000-0000-000000000002',
         },
         queueProducers: {
+          INGESTION_QUEUE: 'source-ingestion',
           TELEGRAM_DELIVERY_QUEUE: 'telegram-delivery',
         },
         queueConsumers: {
+          'source-ingestion': {
+            maxBatchSize: 10,
+            maxBatchTimeout: 0.05,
+            maxRetries: 5,
+            deadLetterQueue: 'source-ingestion-dlq',
+          },
+          'source-ingestion-dlq': {
+            maxBatchSize: 10,
+            maxBatchTimeout: 0.05,
+            maxRetries: 3,
+          },
           'telegram-delivery': {
             maxBatchSize: 10,
             maxBatchTimeout: 0.05,

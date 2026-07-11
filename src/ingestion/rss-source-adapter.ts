@@ -9,6 +9,7 @@ import type {
 } from '../domain/ingestion';
 import { getParser } from '../parsers';
 import type { ParsedFeedItem } from '../parsers/types';
+import { parseRetryAfter, SourceHttpError } from './source-http-error';
 
 export const RSS_SOURCE_ADAPTER_KEY = 'rss';
 
@@ -70,8 +71,13 @@ export async function loadRssCanonicalItems(
 	});
 
 	if (!response.ok) {
+		const retryAfterSeconds = parseRetryAfter(response.headers.get('retry-after'));
 		await response.body?.cancel();
-		throw new Error(`RSS fetch failed with HTTP ${response.status}`);
+		throw new SourceHttpError(
+			`RSS fetch failed with HTTP ${response.status}`,
+			response.status,
+			retryAfterSeconds,
+		);
 	}
 
 	const contentLength = Number(response.headers.get('content-length'));

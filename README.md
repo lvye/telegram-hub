@@ -2,15 +2,18 @@
 
 [English](./README_EN.md)
 
-基于 Cloudflare Workers 的 RSS / TwitterAPI.io → Telegram 聚合器。Cron 负责发现内容，D1 保存稳定 identity 和投递状态，Cloudflare Queues 负责异步投递、退避重试和死信处理。
+基于 Cloudflare Workers 的 RSS / TwitterAPI.io → Telegram 聚合器。Cron 只负责生成来源任务，D1 保存稳定 identity 和运行状态，Cloudflare Queues 负责异步采集、投递、退避重试和死信处理。
 
 ## 运行模型
 
 ```text
 Cron (* * * * *)
-  → 抓取/解析 RSS，或按 source cadence 调用 TwitterAPI.io
+  → D1 claim 到期 source
+  → Ingestion Queue: sourceId + queueToken
+  → D1 source lease
+  → 抓取/解析 RSS，或调用 TwitterAPI.io
   → D1: items + deliveries (ready)
-  → Queue: deliveryId
+  → Delivery Queue: deliveryId
   → queue() consumer
   → D1 lease
   → Telegram Bot API
@@ -24,7 +27,7 @@ Cron (0 4 * * *, UTC)
   → 压缩超过保留期的已终结内容，但保留 identity，避免旧文章重推
 ```
 
-Worker 仅保留只读的 `GET /health`。生产环境不提供可触发推送的 HTTP 接口。
+Worker 仅保留只读的 `GET /health` 和 `GET /health/ready`。readiness 会检查来源停更、blocked/dead 状态和 D1 可用性；生产环境不提供可触发推送的 HTTP 接口。
 
 ## 设计特点
 
@@ -32,7 +35,8 @@ Worker 仅保留只读的 `GET /health`。生产环境不提供可触发推送�
 - 同一个 Worker 同时处理 `scheduled()`、`queue()` 和只读 `fetch()`
 - Source Runtime 将 `sourceId`、adapter、identity namespace 和 destination 分离；Cron 只通过 Catalog 与 adapter registry 调度来源
 - `source_runtime_state` 保存 provider-neutral 的 cadence、租约、连续失败和下次轮询状态；`source_ingestion_state` 只保存 provider checkpoint
-- 当前 Cron 仍按 source cadence 直接触发采集，并用 source lease 避免重叠执行；后续 Queue 化可以复用同一运行状态机
+- Cron 只按 `next_poll_at` 产生一个 source 一个 job；Ingestion Queue consumer 用 queue token 和 source lease 吸收重复或过期消息
+- 来源 429/5xx 同时遵守 `Retry-After`、指数退避和 jitter；永久 4xx 进入 `blocked`，原生 ingestion DLQ 耗尽后写入 `dead`，两者在不同冷却期后自动探测恢复
 - RSS 与 TwitterAPI.io adapter 都输出 provider-neutral `CanonicalItem`，统一 ingestion service 负责去重、入库和 checkpoint 提交
 - Telegram chat、parse mode 和 message format 属于独立 destination 配置，不再混入抓取 source
 - 使用 `(source_key, external_id)` 去重，不依赖发布时间水位
@@ -79,6 +83,8 @@ npm ci
 npx wrangler d1 create rss
 npx wrangler queues create telegram-delivery
 npx wrangler queues create telegram-delivery-dlq
+npx wrangler queues create source-ingestion
+npx wrangler queues create source-ingestion-dlq
 ```
 
 将 D1 命令返回的 `database_id` 写入 `wrangler.toml`。Queue 名称已经在配置中声明。

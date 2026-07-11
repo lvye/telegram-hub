@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getConfig, type TwitterApiIoSourceConfig } from '../src/config';
 import { formatTelegramMessage } from '../src/delivery/telegram-formatter';
-import type { ItemInput } from '../src/domain/delivery';
+import type { CanonicalItem } from '../src/domain/ingestion';
 import { ingestSources } from '../src/ingestion/ingest-sources';
 import { DeliveryRepository } from '../src/persistence/delivery-repository';
 
@@ -30,9 +30,6 @@ const TWITTER_API_SOURCE: TwitterApiIoSourceConfig = {
 	type: 'twitterapi-io',
 	sourceKey: 'TWITTER',
 	destinationKey: 'telegram:TWITTER',
-	chatId: 'test-twitter-chat',
-	parseMode: 'HTML',
-	messageFormat: 'twitter',
 	pollEveryMinutes: 5,
 	endpoint: 'https://api.twitterapi.io/twitter/user/last_tweets',
 	apiKey: 'test-api-key',
@@ -43,6 +40,7 @@ const TWITTER_API_SOURCE: TwitterApiIoSourceConfig = {
 	fallback: {
 		url: 'https://example.com/twitter.xml',
 		parser: 'twitter',
+		identityStrategy: 'twitter-status-url',
 	},
 };
 
@@ -149,7 +147,10 @@ describe('source ingestion', () => {
 			description: 'A & B',
 			formattedDescription: 'A &amp; <b>B</b>',
 		});
-		expect(formatTelegramMessage(lease!, source)).toBe([
+		const destination = config.destinations.find(({ destinationKey }) => (
+			destinationKey === source.destinationKey
+		));
+		expect(formatTelegramMessage(lease!, destination!)).toBe([
 			'<b>NA&gt;EU</b>',
 			'A &amp; <b>B</b>',
 			'<a href="https://example.com/formatted">阅读更多</a>',
@@ -325,7 +326,7 @@ describe('source ingestion', () => {
 
 	it('deduplicates an API tweet against a legacy RSS identity alias', async () => {
 		const repository = new DeliveryRepository(env.DB);
-		const existing: ItemInput = {
+		const existing: CanonicalItem = {
 			externalId: 'legacy-rss-guid',
 			identityAliases: ['twitter:200'],
 			title: 'Already sent',

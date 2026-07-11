@@ -6,13 +6,15 @@ const migrations = await readD1Migrations('./migrations');
 export default defineConfig({
   plugins: [
     cloudflareTest({
-      wrangler: {
-        configPath: './wrangler.toml',
-      },
+      main: './src/worker.ts',
       miniflare: {
+        compatibilityDate: '2026-07-10',
         d1Databases: {
           DB: '00000000-0000-0000-0000-000000000001',
           MIGRATION_DB: '00000000-0000-0000-0000-000000000002',
+        },
+        queueProducers: {
+          TELEGRAM_DELIVERY_QUEUE: 'telegram-delivery',
         },
         queueConsumers: {
           'telegram-delivery': {

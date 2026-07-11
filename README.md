@@ -30,6 +30,9 @@ Worker 仅保留只读的 `GET /health`。生产环境不提供可触发推送�
 
 - ES Module Worker + TypeScript，binding 类型由 `wrangler types` 生成
 - 同一个 Worker 同时处理 `scheduled()`、`queue()` 和只读 `fetch()`
+- Source Runtime 将 `sourceId`、adapter、identity namespace 和 destination 分离；Cron 只通过 Catalog 与 adapter registry 调度来源
+- RSS 与 TwitterAPI.io adapter 都输出 provider-neutral `CanonicalItem`，统一 ingestion service 负责去重、入库和 checkpoint 提交
+- Telegram chat、parse mode 和 message format 属于独立 destination 配置，不再混入抓取 source
 - 使用 `(source_key, external_id)` 去重，不依赖发布时间水位
 - TwitterAPI.io 与旧 RSS 共用 `TWITTER` identity alias；RSS 保留原 GUID，tweet status ID 负责跨 provider 去重
 - 最新已知 RSS tweet identity 作为切换 high-water，避免墙钟 cutover 漏推；订阅表中的账号独立失败，不会重复抓取同一个 RSS fallback
@@ -47,8 +50,8 @@ Worker 仅保留只读的 `GET /health`。生产环境不提供可触发推送�
 ```text
 src/
 ├── worker.ts                    # scheduled / queue / fetch 入口
-├── config.ts                    # typed bindings 与数据源配置
-├── ingestion/                   # RSS 抓取、解析、规范化、持久化
+├── config.ts                    # typed bindings、source 输入与 destination 配置
+├── ingestion/                   # Source Catalog、adapter registry、规范化与编排
 ├── delivery/                    # Queue dispatcher/consumer、Telegram adapter
 ├── domain/                      # item/delivery 类型
 ├── persistence/                 # D1 状态机 repository
@@ -169,16 +172,20 @@ npm run check         # types + typecheck + tests + dry-run
 
 ## 添加数据源
 
-1. RSS source 在 `src/parsers/` 添加 parser；HTTP API source 在 `src/ingestion/` 添加 adapter。
-2. 在 `src/config.ts` 添加判别联合 `SourceConfig`，分配稳定的 `sourceKey`、`destinationKey`、message format 和 cadence。
-3. provider 切换必须复用原 `sourceKey`，并设计稳定 identity/cutover，不能直接把历史数据变成 ready delivery。
-4. 添加 fixture 测试，覆盖分页预算、provider 去重、首次 cutover、延迟文章和 Telegram 格式化。
+1. 实现 `SourceAdapter`，直接输出 provider-neutral `CanonicalItem` 和可选 checkpoint transition。
+2. 在 adapter registry 注册；`IngestionService` 不增加 provider `if/switch`。
+3. 通过 `SourceCatalog` 生成稳定的 `sourceId`、`identityNamespace`、`destinationKey` 和 cadence。密钥只存在于运行时 adapter 配置，不写入持久化 job。
+4. 新展示目标在 destination 配置和 formatter 中注册，不要把 chat 或 message format 放回 source。
+5. provider 切换必须复用 identity namespace，并设计稳定 identity/cutover，不能直接把历史数据变成 ready delivery。
+6. 添加 adapter contract 与 fixture 测试，覆盖分页预算、provider 去重、首次 cutover、延迟文章和 Telegram 格式化。
 
-Parser 不生成 Telegram HTML；输出格式属于 delivery 层。
+Feed parser 只解释来源格式；adapter 负责形成 canonical item，delivery 层负责最终 Telegram 格式并在发送边界重新校验富文本。
 
 ## 投递语义
 
 Cloudflare Queues 是 at-least-once。consumer 会先检查 D1 终态并通过 lease 吸收绝大多数重复，但“Telegram 已成功、D1 标记 sent 前进程中断”仍可能导致极少量重复消息。这是外部 API 没有幂等键时无法完全消除的窗口。
+
+`destinationKey` 是持久化投递身份。只更换 Telegram chat 时应保留原 key；新增 key 会为当前抓取窗口内已知 item 补建独立 delivery（RSS 每轮最多 50 条），可用于受控路由/backfill。不要让两个 key 指向同一 chat，除非明确接受重复展示。
 
 Queue 的 `max_retries` / DLQ 处理基础设施级失败；Telegram 返回的 429、408 和 5xx 会由应用状态机按 `available_at` 退避后重新入队。400 等永久业务错误不会无意义地进入 DLQ。
 

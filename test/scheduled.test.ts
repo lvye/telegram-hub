@@ -1,11 +1,11 @@
 import { env } from 'cloudflare:workers';
 import { createScheduledController } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ItemInput } from '../src/domain/delivery';
+import type { CanonicalItem } from '../src/domain/ingestion';
 import { DeliveryRepository } from '../src/persistence/delivery-repository';
 import worker, { CLEANUP_CRON, UPDATE_CRON } from '../src/worker';
 
-const ITEM: ItemInput = {
+const ITEM: CanonicalItem = {
 	externalId: 'cleanup-item',
 	title: 'Cleanup item',
 	description: 'Payload to compact',

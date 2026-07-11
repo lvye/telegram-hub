@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { applyD1Migrations } from 'cloudflare:test';
 import { expect, it } from 'vitest';
-import type { ItemInput } from '../src/domain/delivery';
+import type { CanonicalItem } from '../src/domain/ingestion';
 import { DeliveryRepository } from '../src/persistence/delivery-repository';
 
 it('backfills legacy delivery states without losing item identity', async () => {
@@ -91,7 +91,7 @@ it('backfills legacy delivery states without losing item identity', async () => 
 
 	// A rollback Worker only knows the plain description. If it wins a later
 	// update, the new Worker must not retain stale rich HTML for that item.
-	const richItem: ItemInput = {
+	const richItem: CanonicalItem = {
 		externalId: 'legacy-rich-guid',
 		title: 'Rich before rollback',
 		description: 'Old plain body',
@@ -131,7 +131,7 @@ it('backfills legacy delivery states without losing item identity', async () => 
 	// If the old Worker claims an item while the new Worker has already created
 	// its delivery, ambiguous legacy pending must win until the old outcome is
 	// known. Otherwise both versions could send the same Telegram message.
-	const raceItem: ItemInput = {
+	const raceItem: CanonicalItem = {
 		externalId: 'cutover-race-guid',
 		title: 'Cutover race',
 		description: null,
@@ -173,7 +173,7 @@ it('backfills legacy delivery states without losing item identity', async () => 
 	// An active lease must be protected without advancing the global bridge
 	// cursor past the legacy outcome. Once that lease releases, the same legacy
 	// row must still be visible and authoritative.
-	const deferredItem: ItemInput = {
+	const deferredItem: CanonicalItem = {
 		...raceItem,
 		externalId: 'deferred-legacy-guid',
 		title: 'Deferred legacy outcome',

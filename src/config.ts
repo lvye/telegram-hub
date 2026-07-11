@@ -6,20 +6,26 @@ export const TWITTERAPI_IO_ENDPOINT = 'https://api.twitterapi.io/twitter/user/la
 
 export type TelegramParseMode = 'HTML';
 export type MessageFormat = 'article' | 'twitter';
+export type IdentityStrategy = 'external-id' | 'twitter-status-url';
 
 interface SourceConfigBase {
 	sourceKey: string;
 	destinationKey: string;
+	pollEveryMinutes: number;
+}
+
+export interface DeliveryDestinationConfig {
+	destinationKey: string;
 	chatId: string;
 	parseMode: TelegramParseMode;
 	messageFormat: MessageFormat;
-	pollEveryMinutes: number;
 }
 
 export interface RssSourceConfig extends SourceConfigBase {
 	type: 'rss';
 	url: string;
 	parser: ParserName;
+	identityStrategy: IdentityStrategy;
 }
 
 export interface TwitterApiIoSourceConfig extends SourceConfigBase {
@@ -30,16 +36,36 @@ export interface TwitterApiIoSourceConfig extends SourceConfigBase {
 	userName: string | null;
 	includeReplies: boolean;
 	maxPages: number;
-	fallback: Pick<RssSourceConfig, 'parser' | 'url'> | null;
+	fallback: Pick<RssSourceConfig, 'identityStrategy' | 'parser' | 'url'> | null;
 	providerStateKey?: string;
 	initializationAt?: number;
 	bootstrapUserName?: string;
 }
 
+export type RssSourceAdapterConfig = Pick<
+	RssSourceConfig,
+	'identityStrategy' | 'parser' | 'url'
+>;
+
+export type TwitterApiIoUserAdapterConfig = Pick<
+	TwitterApiIoSourceConfig,
+	| 'apiKey'
+	| 'bootstrapUserName'
+	| 'endpoint'
+	| 'fallback'
+	| 'includeReplies'
+	| 'initializationAt'
+	| 'maxPages'
+	| 'providerStateKey'
+	| 'userId'
+	| 'userName'
+>;
+
 export type SourceConfig = RssSourceConfig | TwitterApiIoSourceConfig;
 
 export interface AppConfig {
 	sources: SourceConfig[];
+	destinations: DeliveryDestinationConfig[];
 	twitterApiIo: {
 		apiKey: string | null;
 		endpoint: string;
@@ -72,7 +98,6 @@ export function getConfig(env: Env): AppConfig {
 	const twitterApiIo = twitterApiIoRuntime(env);
 	const twitterApiSource = optionalTwitterApiIoSource(
 		env,
-		twitterChatId,
 		twitterRssUrl,
 		twitterApiIo,
 	);
@@ -84,10 +109,8 @@ export function getConfig(env: Env): AppConfig {
 				sourceKey: 'IT_HOME',
 				url: 'https://www.ithome.com/rss/',
 				parser: 'it-home',
+				identityStrategy: 'external-id',
 				destinationKey: 'telegram:IT_HOME',
-				chatId: itHomeChatId,
-				parseMode: 'HTML',
-				messageFormat: 'article',
 				pollEveryMinutes: 1,
 			},
 			twitterApiSource ?? {
@@ -95,11 +118,23 @@ export function getConfig(env: Env): AppConfig {
 				sourceKey: 'TWITTER',
 				url: twitterRssUrl,
 				parser: 'twitter',
+				identityStrategy: 'twitter-status-url',
+				destinationKey: 'telegram:TWITTER',
+				pollEveryMinutes: 1,
+			},
+		],
+		destinations: [
+			{
+				destinationKey: 'telegram:IT_HOME',
+				chatId: itHomeChatId,
+				parseMode: 'HTML',
+				messageFormat: 'article',
+			},
+			{
 				destinationKey: 'telegram:TWITTER',
 				chatId: twitterChatId,
 				parseMode: 'HTML',
 				messageFormat: 'twitter',
-				pollEveryMinutes: 1,
 			},
 		],
 		twitterApiIo,
@@ -133,7 +168,6 @@ type OptionalTwitterApiBindings = {
 
 function optionalTwitterApiIoSource(
 	env: Env,
-	chatId: string,
 	fallbackUrl: string,
 	runtime: AppConfig['twitterApiIo'],
 ): TwitterApiIoSourceConfig | null {
@@ -149,9 +183,6 @@ function optionalTwitterApiIoSource(
 		type: 'twitterapi-io',
 		sourceKey: 'TWITTER',
 		destinationKey: 'telegram:TWITTER',
-		chatId,
-		parseMode: 'HTML',
-		messageFormat: 'twitter',
 		pollEveryMinutes: runtime.pollEveryMinutes,
 		endpoint: runtime.endpoint,
 		apiKey: runtime.apiKey,
@@ -162,6 +193,7 @@ function optionalTwitterApiIoSource(
 		fallback: {
 			url: fallbackUrl,
 			parser: 'twitter',
+			identityStrategy: 'twitter-status-url',
 		},
 	};
 }
@@ -177,8 +209,13 @@ function twitterApiIoRuntime(env: Env): AppConfig['twitterApiIo'] {
 	};
 }
 
-export function findSourceByDestination(config: AppConfig, destinationKey: string): SourceConfig | null {
-	return config.sources.find((source) => source.destinationKey === destinationKey) ?? null;
+export function findDestination(
+	config: AppConfig,
+	destinationKey: string,
+): DeliveryDestinationConfig | null {
+	return config.destinations.find((destination) => (
+		destination.destinationKey === destinationKey
+	)) ?? null;
 }
 
 function requiredBinding(value: string | undefined, name: string): string {

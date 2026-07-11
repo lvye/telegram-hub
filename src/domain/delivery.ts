@@ -7,18 +7,6 @@ export type DeliveryStatus =
 	| 'sending'
 	| 'sent';
 
-export interface ItemInput {
-	externalId: string;
-	identityAliases?: string[];
-	title: string | null;
-	description: string | null;
-	link: string | null;
-	author: string | null;
-	imageUrl: string | null;
-	publishedAt: number | null;
-	metadata?: Record<string, unknown>;
-}
-
 export interface DeliveryJob {
 	version: 1;
 	deliveryId: number;

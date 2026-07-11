@@ -9,6 +9,30 @@ const BASE_ENV = {
 } as unknown as Env;
 
 describe('source configuration', () => {
+	it('separates source discovery from delivery destinations', () => {
+		const config = getConfig(BASE_ENV);
+
+		expect(config.destinations).toEqual([
+			{
+				destinationKey: 'telegram:IT_HOME',
+				chatId: 'it-home-chat',
+				parseMode: 'HTML',
+				messageFormat: 'article',
+			},
+			{
+				destinationKey: 'telegram:TWITTER',
+				chatId: 'twitter-chat',
+				parseMode: 'HTML',
+				messageFormat: 'twitter',
+			},
+		]);
+		for (const source of config.sources) {
+			expect(source).not.toHaveProperty('chatId');
+			expect(source).not.toHaveProperty('parseMode');
+			expect(source).not.toHaveProperty('messageFormat');
+		}
+	});
+
 	it('keeps RSS active until the optional API configuration is complete', () => {
 		const config = getConfig({
 			...BASE_ENV,

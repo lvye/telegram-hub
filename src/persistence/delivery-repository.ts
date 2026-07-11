@@ -3,8 +3,12 @@ import type {
 	DeliveryState,
 	DeliveryStatus,
 	DispatchableDelivery,
-	ItemInput,
 } from '../domain/delivery';
+import type { CanonicalItem } from '../domain/ingestion';
+import type {
+	TwitterApiIoCheckpoint,
+	TwitterApiIoCheckpointProgress,
+} from '../ingestion/twitter-api-checkpoint';
 
 interface DispatchableRow {
 	delivery_id: number;
@@ -12,6 +16,10 @@ interface DispatchableRow {
 
 interface CandidateIdentityRow {
 	candidate_external_id: string;
+}
+
+interface AmbiguousCandidateRow {
+	ambiguous_count: number;
 }
 
 interface MigrationBridgeCursorRow {
@@ -30,20 +38,6 @@ interface SourceIngestionStateRow {
 interface SourceProviderBootstrapRow {
 	high_water_external_id: string | null;
 	published_at: number;
-}
-
-export interface SourceIngestionState {
-	highWaterExternalId: string | null;
-	initializedAt: number;
-	lastSuccessfulPollAt: number | null;
-	nextCursor: string | null;
-	pendingHighWaterExternalId: string | null;
-}
-
-export interface SourceIngestionProgress {
-	highWaterExternalId: string | null;
-	nextCursor: string | null;
-	pendingHighWaterExternalId: string | null;
 }
 
 interface DeliveryStateRow {
@@ -397,7 +391,7 @@ export class DeliveryRepository {
 	async upsertItems(
 		sourceKey: string,
 		destinationKey: string,
-		items: ItemInput[],
+		items: CanonicalItem[],
 		now = currentUnixTime(),
 	): Promise<void> {
 		assertNonEmpty(sourceKey, 'sourceKey');
@@ -529,7 +523,7 @@ export class DeliveryRepository {
 
 	async findExistingItemIdentities(
 		sourceKey: string,
-		candidates: Array<Pick<ItemInput, 'externalId' | 'identityAliases'>>,
+		candidates: Array<Pick<CanonicalItem, 'externalId' | 'identityAliases'>>,
 	): Promise<Set<string>> {
 		assertNonEmpty(sourceKey, 'sourceKey');
 		const uniqueCandidates = [...new Map(candidates.map((candidate) => [
@@ -562,13 +556,82 @@ export class DeliveryRepository {
 		return new Set(result.results.map((row) => row.candidate_external_id));
 	}
 
+	async ensureDeliveriesForCandidates(
+		sourceKey: string,
+		destinationKey: string,
+		candidates: Array<Pick<CanonicalItem, 'externalId' | 'identityAliases'>>,
+		now = currentUnixTime(),
+	): Promise<number> {
+		assertNonEmpty(sourceKey, 'sourceKey');
+		assertNonEmpty(destinationKey, 'destinationKey');
+		if (candidates.length === 0) return 0;
+
+		const payload = candidates.map((candidate) => ({
+			aliases: itemAliases(candidate),
+		}));
+		const encodedPayload = JSON.stringify(payload);
+		const ambiguity = await this.db.prepare(`
+			SELECT COUNT(*) AS ambiguous_count
+			FROM (
+				SELECT candidate.key
+				FROM json_each(?) AS candidate
+				JOIN json_each(candidate.value, '$.aliases') AS candidate_alias
+				JOIN item_identity_aliases AS existing
+					ON existing.source_key = ?
+					AND existing.alias = CAST(candidate_alias.value AS TEXT)
+				WHERE candidate_alias.type = 'text'
+				GROUP BY candidate.key
+				HAVING COUNT(DISTINCT existing.item_id) > 1
+			)
+		`).bind(encodedPayload, sourceKey).first<AmbiguousCandidateRow>();
+		if ((ambiguity?.ambiguous_count ?? 0) > 0) {
+			throw new Error(
+				`Ambiguous item identity aliases for ${sourceKey}: `
+				+ `${ambiguity!.ambiguous_count} candidate(s) matched multiple items`,
+			);
+		}
+
+		const result = await this.db.prepare(`
+			WITH resolved_candidates AS (
+				SELECT MIN(existing.item_id) AS item_id
+				FROM json_each(?) AS candidate
+				JOIN json_each(candidate.value, '$.aliases') AS candidate_alias
+				JOIN item_identity_aliases AS existing
+					ON existing.source_key = ?
+					AND existing.alias = CAST(candidate_alias.value AS TEXT)
+				WHERE candidate_alias.type = 'text'
+				GROUP BY candidate.key
+				HAVING COUNT(DISTINCT existing.item_id) = 1
+			)
+			INSERT OR IGNORE INTO deliveries (
+				item_id,
+				destination_key,
+				status,
+				available_at,
+				created_at,
+				updated_at
+			)
+			SELECT DISTINCT item_id, ?, 'ready', ?, ?, ?
+			FROM resolved_candidates
+		`).bind(
+			encodedPayload,
+			sourceKey,
+			destinationKey,
+			now,
+			now,
+			now,
+		).run();
+
+		return result.meta.changes ?? 0;
+	}
+
 	async getOrCreateSourceProviderState(
 		sourceKey: string,
 		provider: string,
 		fallbackInitializedAt: number,
 		overlapSeconds = 60,
 		bootstrapUserName: string | null = null,
-	): Promise<SourceIngestionState> {
+	): Promise<TwitterApiIoCheckpoint> {
 		assertNonEmpty(sourceKey, 'sourceKey');
 		assertNonEmpty(provider, 'provider');
 		const existing = await this.findSourceProviderState(sourceKey, provider);
@@ -646,7 +709,7 @@ export class DeliveryRepository {
 	async getSourceProviderState(
 		sourceKey: string,
 		provider: string,
-	): Promise<SourceIngestionState> {
+	): Promise<TwitterApiIoCheckpoint> {
 		assertNonEmpty(sourceKey, 'sourceKey');
 		assertNonEmpty(provider, 'provider');
 		const state = await this.findSourceProviderState(sourceKey, provider);
@@ -657,7 +720,7 @@ export class DeliveryRepository {
 	private async findSourceProviderState(
 		sourceKey: string,
 		provider: string,
-	): Promise<SourceIngestionState | null> {
+	): Promise<TwitterApiIoCheckpoint | null> {
 		const state = await this.db.prepare(`
 			SELECT
 				initialized_at,
@@ -682,8 +745,8 @@ export class DeliveryRepository {
 	async updateSourceIngestionProgress(
 		sourceKey: string,
 		provider: string,
-		previous: SourceIngestionState,
-		progress: SourceIngestionProgress,
+		previous: TwitterApiIoCheckpoint,
+		progress: TwitterApiIoCheckpointProgress,
 		now = currentUnixTime(),
 	): Promise<void> {
 		assertNonEmpty(sourceKey, 'sourceKey');
@@ -1087,7 +1150,7 @@ function mapLease(row: DeliveryLeaseRow): DeliveryLease {
 }
 
 function itemAliases(
-	item: Pick<ItemInput, 'externalId' | 'identityAliases'>,
+	item: Pick<CanonicalItem, 'externalId' | 'identityAliases'>,
 ): string[] {
 	return [...new Set([
 		item.externalId,

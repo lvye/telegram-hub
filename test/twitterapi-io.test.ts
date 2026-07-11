@@ -10,9 +10,6 @@ const SOURCE: TwitterApiIoSourceConfig = {
 	type: 'twitterapi-io',
 	sourceKey: 'TWITTER',
 	destinationKey: 'telegram:TWITTER',
-	chatId: 'twitter-chat',
-	parseMode: 'HTML',
-	messageFormat: 'twitter',
 	pollEveryMinutes: 5,
 	endpoint: 'https://api.twitterapi.io/twitter/user/last_tweets',
 	apiKey: 'test-api-key',
@@ -23,6 +20,7 @@ const SOURCE: TwitterApiIoSourceConfig = {
 	fallback: {
 		url: 'https://example.com/twitter.xml',
 		parser: 'twitter',
+		identityStrategy: 'twitter-status-url',
 	},
 };
 
@@ -59,13 +57,18 @@ describe('TwitterAPI.io client', () => {
 		expect(request!.headers.get('X-API-Key')).toBe('test-api-key');
 		expect(batch).toMatchObject({ completed: true, stopReason: 'end' });
 		expect(batch.items).toEqual([{
-			guid: 'twitter:2070555272230384038',
+			externalId: 'twitter:2070555272230384038',
+			identityAliases: [
+				'twitter:2070555272230384038',
+				'https://x.com/OpenAI/status/2070555272230384038',
+			],
 			title: 'A new model',
-			description: '',
+			description: null,
 			link: 'https://x.com/OpenAI/status/2070555272230384038',
-			pubDate: 'Fri Jun 26 17:10:00 +0000 2026',
 			author: 'OpenAI (@OpenAI)',
-			image: null,
+			imageUrl: null,
+			publishedAt: 1_782_493_800,
+			metadata: { provider: 'twitterapi-io', parser: 'twitter' },
 		}]);
 	});
 
@@ -83,7 +86,7 @@ describe('TwitterAPI.io client', () => {
 		const batch = await fetchBatch({ ...SOURCE, maxPages: 2 });
 
 		expect(cursors).toEqual(['', 'next-page']);
-		expect(batch.items.map((item) => item.guid)).toEqual(['twitter:1', 'twitter:2']);
+		expect(batch.items.map((item) => item.externalId)).toEqual(['twitter:1', 'twitter:2']);
 		expect(batch).toMatchObject({ completed: true, nextCursor: null });
 	});
 
@@ -115,7 +118,7 @@ describe('TwitterAPI.io client', () => {
 			stopAtExternalId: 'twitter:2',
 		});
 
-		expect(batch.items.map((item) => item.guid)).toEqual(['twitter:3']);
+		expect(batch.items.map((item) => item.externalId)).toEqual(['twitter:3']);
 		expect(batch).toMatchObject({ completed: true, stopReason: 'high-water' });
 	});
 
@@ -144,7 +147,9 @@ describe('TwitterAPI.io client', () => {
 			}))
 			.mockResolvedValueOnce(Response.json({ status: 'error', msg: 'balance exhausted' }));
 
-		await expect(fetchBatch()).resolves.toMatchObject({ items: [{ guid: 'twitter:3' }] });
+		await expect(fetchBatch()).resolves.toMatchObject({
+			items: [{ externalId: 'twitter:3' }],
+		});
 		await expect(fetchBatch()).rejects.toThrow(
 			'TwitterAPI.io returned an application error: balance exhausted',
 		);

@@ -9,6 +9,7 @@ if (isMainModule()) {
 	console.info(JSON.stringify({
 		event: 'deployment_smoke_succeeded',
 		attempt: result.attempt,
+		activeSources: result.activeSources,
 		versionId: result.versionId,
 		versionTag: result.versionTag,
 	}));
@@ -23,30 +24,39 @@ export async function smokeHealth({
 	maxAttempts = 12,
 }) {
 	const healthUrl = new URL('/health', baseUrl);
+	const readinessUrl = new URL('/health/ready', baseUrl);
 	let lastFailure = 'smoke test did not run';
 	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
 		try {
-			const response = await fetchImpl(healthUrl, {
-				headers: { 'cache-control': 'no-cache' },
-				signal: AbortSignal.timeout(10_000),
-			});
-			const payload = await response.json();
-			const valid = response.ok
-				&& payload?.service === 'telegram-hub'
-				&& payload?.status === 'ok'
-				&& typeof payload?.versionId === 'string'
-				&& payload.versionId.length > 0
-				&& payload?.versionTag === expectedVersionTag;
+			const [health, readiness] = await Promise.all([
+				fetchJson(fetchImpl, healthUrl),
+				fetchJson(fetchImpl, readinessUrl),
+			]);
+			const valid = health.response.ok
+				&& health.payload?.service === 'telegram-hub'
+				&& health.payload?.status === 'ok'
+				&& typeof health.payload?.versionId === 'string'
+				&& health.payload.versionId.length > 0
+				&& health.payload?.versionTag === expectedVersionTag
+				&& readiness.response.ok
+				&& readiness.payload?.service === 'telegram-hub'
+				&& readiness.payload?.status === 'ready'
+				&& readiness.payload?.activeSources > 0
+				&& readiness.payload?.versionTag === expectedVersionTag;
 
 			if (valid) {
 				return {
 					attempt,
-					versionId: payload.versionId,
-					versionTag: payload.versionTag,
+					activeSources: readiness.payload.activeSources,
+					versionId: health.payload.versionId,
+					versionTag: health.payload.versionTag,
 				};
 			}
 
-			lastFailure = `HTTP ${response.status}: ${JSON.stringify(payload)}`;
+			lastFailure = JSON.stringify({
+				health: { status: health.response.status, payload: health.payload },
+				readiness: { status: readiness.response.status, payload: readiness.payload },
+			});
 		} catch (error) {
 			lastFailure = error instanceof Error ? error.message : String(error);
 		}
@@ -60,6 +70,14 @@ export async function smokeHealth({
 	}
 
 	throw new Error(`Deployment smoke test failed after ${maxAttempts} attempts: ${lastFailure}`);
+}
+
+async function fetchJson(fetchImpl, url) {
+	const response = await fetchImpl(url, {
+		headers: { 'cache-control': 'no-cache' },
+		signal: AbortSignal.timeout(10_000),
+	});
+	return { response, payload: await response.json() };
 }
 
 function requiredEnv(name) {

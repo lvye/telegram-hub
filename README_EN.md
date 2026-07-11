@@ -2,13 +2,14 @@
 
 [中文](./README.md)
 
-An RSS / TwitterAPI.io-to-Telegram aggregator built for Cloudflare Workers. Cron discovers content, D1 stores stable identities and delivery state, and Cloudflare Queues handles asynchronous delivery, backoff, and dead-lettering.
+An RSS / TwitterAPI.io-to-Telegram aggregator built for Cloudflare Workers. Cron only produces source jobs, D1 stores stable identities and runtime state, and Cloudflare Queues handles asynchronous ingestion, delivery, backoff, and dead-lettering.
 
 ## Runtime model
 
 ```text
-Cron → fetch/parse RSS or poll TwitterAPI.io on a source cadence
-     → D1 items + deliveries → Queue deliveryId
+Cron → claim due sources in D1 → Ingestion Queue sourceId + queueToken
+     → source lease → fetch/parse RSS or poll TwitterAPI.io
+     → D1 items + deliveries → Delivery Queue deliveryId
      → queue() consumer → D1 lease → Telegram → sent/retry/dead
 
 Exhausted infrastructure retries → native DLQ consumer → D1 retry/dead
@@ -16,7 +17,7 @@ Exhausted infrastructure retries → native DLQ consumer → D1 retry/dead
 Daily UTC Cron → compact old terminal payloads while retaining identity
 ```
 
-The Worker only exposes a read-only `GET /health` endpoint. There is no public HTTP endpoint that can trigger Telegram delivery.
+The Worker only exposes read-only `GET /health` and `GET /health/ready` endpoints. Readiness checks D1, stopped sources, and blocked/dead runtime states. There is no public HTTP endpoint that can trigger Telegram delivery.
 
 ## Highlights
 
@@ -24,7 +25,8 @@ The Worker only exposes a read-only `GET /health` endpoint. There is no public H
 - One Worker handles `scheduled()`, `queue()`, and read-only `fetch()` events
 - A Source Runtime separates source instances, adapters, identity namespaces, and delivery destinations
 - `source_runtime_state` stores provider-neutral cadence, leases, consecutive failures, and next-poll state; `source_ingestion_state` remains provider checkpoint state
-- Cron still invokes due sources directly and uses per-source leases to prevent overlapping work; a later ingestion Queue can reuse the same runtime state machine
+- Cron emits one job per due source; the ingestion consumer uses queue tokens and source leases to reject duplicate or expired jobs
+- Source 429/5xx failures combine `Retry-After`, exponential backoff, and jitter; permanent 4xx failures become `blocked`, exhausted ingestion DLQ jobs become `dead`, and both probe recovery after separate cooldowns
 - RSS and TwitterAPI.io adapters emit provider-neutral `CanonicalItem` batches; one ingestion service owns deduplication, persistence, and checkpoint commits
 - Telegram chat IDs, parse mode, and message format live in destination configuration rather than discovery sources
 - `(source_key, external_id)` identity instead of a publication-date watermark
@@ -63,6 +65,8 @@ npm ci
 npx wrangler d1 create rss
 npx wrangler queues create telegram-delivery
 npx wrangler queues create telegram-delivery-dlq
+npx wrangler queues create source-ingestion
+npx wrangler queues create source-ingestion-dlq
 ```
 
 Copy the returned D1 `database_id` into `wrangler.toml`, then configure the required secrets:

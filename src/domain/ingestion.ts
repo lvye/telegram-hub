@@ -23,6 +23,13 @@ export interface SourceCatalog {
 	list(): Promise<SourceDefinition[]>;
 }
 
+export interface IngestionJob {
+	version: 1;
+	sourceId: string;
+	queueToken: string;
+	scheduledAt: number;
+}
+
 export interface IngestionOptions {
 	feedTimeoutMs: number;
 	maxFeedBytes: number;

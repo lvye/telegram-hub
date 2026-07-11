@@ -2,6 +2,8 @@ import type { ParserName } from './parsers/types';
 
 export const DELIVERY_QUEUE_NAME = 'telegram-delivery';
 export const DELIVERY_DLQ_NAME = 'telegram-delivery-dlq';
+export const INGESTION_QUEUE_NAME = 'source-ingestion';
+export const INGESTION_DLQ_NAME = 'source-ingestion-dlq';
 export const TWITTERAPI_IO_ENDPOINT = 'https://api.twitterapi.io/twitter/user/last_tweets';
 
 export type TelegramParseMode = 'HTML';
@@ -77,6 +79,12 @@ export interface AppConfig {
 		feedTimeoutMs: number;
 		maxFeedBytes: number;
 		maxItemsPerSource: number;
+		leaseSeconds: number;
+		queueClaimSeconds: number;
+		deadRecoverySeconds: number;
+		blockedRecoverySeconds: number;
+		readinessMinimumSeconds: number;
+		readinessPollMultiplier: number;
 	};
 	delivery: {
 		dispatchBatchSize: number;
@@ -142,6 +150,12 @@ export function getConfig(env: Env): AppConfig {
 			feedTimeoutMs: 15_000,
 			maxFeedBytes: 2 * 1024 * 1024,
 			maxItemsPerSource: 50,
+			leaseSeconds: 5 * 60,
+			queueClaimSeconds: 5 * 60,
+			deadRecoverySeconds: 6 * 60 * 60,
+			blockedRecoverySeconds: 60 * 60,
+			readinessMinimumSeconds: 10 * 60,
+			readinessPollMultiplier: 3,
 		},
 		delivery: {
 			dispatchBatchSize: 100,

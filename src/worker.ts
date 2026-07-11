@@ -1,8 +1,19 @@
-import { DELIVERY_DLQ_NAME, getConfig } from './config';
+import {
+	DELIVERY_DLQ_NAME,
+	getConfig,
+	INGESTION_DLQ_NAME,
+	INGESTION_QUEUE_NAME,
+} from './config';
 import { consumeDeadLetterBatch, consumeDeliveryBatch } from './delivery/consumer';
 import { dispatchReadyDeliveries } from './delivery/dispatcher';
 import type { DeliveryJob } from './domain/delivery';
-import { ingestSources } from './ingestion/ingest-sources';
+import type { IngestionJob } from './domain/ingestion';
+import { sourceReadiness, logSourceReadiness } from './health/readiness';
+import {
+	consumeIngestionBatch,
+	consumeIngestionDeadLetterBatch,
+} from './ingestion/consumer';
+import { dispatchDueSources } from './ingestion/dispatcher';
 import { runCleanup } from './maintenance/cleanup';
 
 export const UPDATE_CRON = '* * * * *';
@@ -38,12 +49,20 @@ export default {
 	},
 
 	async queue(batch, env) {
+		if (batch.queue === INGESTION_DLQ_NAME) {
+			await consumeIngestionDeadLetterBatch(batch as MessageBatch<IngestionJob>, env);
+			return;
+		}
+		if (batch.queue === INGESTION_QUEUE_NAME) {
+			await consumeIngestionBatch(batch as MessageBatch<IngestionJob>, env, getConfig(env));
+			return;
+		}
 		if (batch.queue === DELIVERY_DLQ_NAME) {
-			await consumeDeadLetterBatch(batch, env, getConfig(env));
+			await consumeDeadLetterBatch(batch as MessageBatch<DeliveryJob>, env, getConfig(env));
 			return;
 		}
 
-		await consumeDeliveryBatch(batch, env, getConfig(env));
+		await consumeDeliveryBatch(batch as MessageBatch<DeliveryJob>, env, getConfig(env));
 	},
 
 	async fetch(request, env) {
@@ -59,25 +78,46 @@ export default {
 				headers: { 'cache-control': 'no-store' },
 			});
 		}
+		if (request.method === 'GET' && url.pathname === '/health/ready') {
+			try {
+				const readiness = await sourceReadiness(env, getConfig(env));
+				return Response.json({
+					service: 'telegram-hub',
+					...readiness,
+					versionId: env.CF_VERSION_METADATA.id,
+					versionTag: env.CF_VERSION_METADATA.tag,
+				}, {
+					status: readiness.status === 'ready' ? 200 : 503,
+					headers: { 'cache-control': 'no-store' },
+				});
+			} catch (error) {
+				console.error({
+					event: 'readiness_check_failed',
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return Response.json({
+					service: 'telegram-hub',
+					status: 'not_ready',
+					error: 'readiness_check_failed',
+					versionId: env.CF_VERSION_METADATA.id,
+					versionTag: env.CF_VERSION_METADATA.tag,
+				}, {
+					status: 503,
+					headers: { 'cache-control': 'no-store' },
+				});
+			}
+		}
 
 		return Response.json({ error: 'Not found' }, { status: 404 });
 	},
-} satisfies ExportedHandler<Env, DeliveryJob>;
+} satisfies ExportedHandler<Env, DeliveryJob | IngestionJob>;
 
 async function runUpdate(
 	env: Env,
 	config: ReturnType<typeof getConfig>,
 	scheduledTime: number,
 ): Promise<void> {
-	let ingestionError: unknown;
-
-	try {
-		await ingestSources(env, config, scheduledTime);
-	} catch (error) {
-		ingestionError = error;
-	}
-
+	await dispatchDueSources(env, config, scheduledTime);
 	await dispatchReadyDeliveries(env, config);
-
-	if (ingestionError) throw ingestionError;
+	await logSourceReadiness(env, config, Math.floor(scheduledTime / 1_000));
 }

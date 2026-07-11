@@ -1,5 +1,6 @@
 import type { TwitterApiIoUserAdapterConfig } from '../config';
 import type { CanonicalItem, IngestionOptions } from '../domain/ingestion';
+import { parseRetryAfter, SourceHttpError } from './source-http-error';
 
 interface TwitterApiIoAuthor {
 	id?: unknown;
@@ -35,13 +36,13 @@ export interface TwitterApiIoBatch {
 	stopReason: 'cutover' | 'end' | 'high-water' | 'page-budget';
 }
 
-export class TwitterApiIoError extends Error {
+export class TwitterApiIoError extends SourceHttpError {
 	constructor(
 		message: string,
-		readonly status: number,
-		readonly retryAfterSeconds: number | null,
+		status: number,
+		retryAfterSeconds: number | null,
 	) {
-		super(message);
+		super(message, status, retryAfterSeconds);
 		this.name = 'TwitterApiIoError';
 	}
 }
@@ -296,16 +297,6 @@ function errorSuffix(value: Record<string, unknown>): string {
 		?? stringValue(value.detail)
 		?? stringValue(value.error);
 	return message ? `: ${message.slice(0, 300)}` : '';
-}
-
-function parseRetryAfter(value: string | null): number | null {
-	if (!value) return null;
-	const seconds = Number(value);
-	if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
-	const retryAt = Date.parse(value);
-	return Number.isFinite(retryAt)
-		? Math.max(0, Math.ceil((retryAt - Date.now()) / 1_000))
-		: null;
 }
 
 function parsedTweetTime(value: unknown): number | null {

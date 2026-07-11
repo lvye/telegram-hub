@@ -8,18 +8,27 @@ const HEALTHY_PAYLOAD = {
 	versionId: 'version-id',
 	versionTag: 'expected-sha',
 };
+const READY_PAYLOAD = {
+	service: 'telegram-hub',
+	status: 'ready',
+	activeSources: 6,
+	issues: [],
+	versionId: 'version-id',
+	versionTag: 'expected-sha',
+};
 
 test('accepts the deployed version tag', async () => {
 	const result = await smokeHealth({
 		baseUrl: 'https://worker.example',
 		expectedVersionTag: 'expected-sha',
-		fetchImpl: async () => Response.json(HEALTHY_PAYLOAD),
+		fetchImpl: healthyFetch(),
 		delayImpl: async () => undefined,
 		logger: silentLogger(),
 	});
 
 	assert.deepEqual(result, {
 		attempt: 1,
+		activeSources: 6,
 		versionId: 'version-id',
 		versionTag: 'expected-sha',
 	});
@@ -31,11 +40,13 @@ test('retries until traffic reaches the expected version', async () => {
 	const result = await smokeHealth({
 		baseUrl: 'https://worker.example',
 		expectedVersionTag: 'expected-sha',
-		fetchImpl: async () => {
-			calls += 1;
+		fetchImpl: async (url) => {
+			const path = new URL(url).pathname;
+			if (path === '/health') calls += 1;
+			const versionTag = calls === 1 ? 'previous-sha' : 'expected-sha';
 			return Response.json({
-				...HEALTHY_PAYLOAD,
-				versionTag: calls === 1 ? 'previous-sha' : 'expected-sha',
+				...(path === '/health/ready' ? READY_PAYLOAD : HEALTHY_PAYLOAD),
+				versionTag,
 			});
 		},
 		delayImpl: async (milliseconds) => delays.push(milliseconds),
@@ -50,8 +61,8 @@ test('fails after the bounded retry budget', async () => {
 	await assert.rejects(() => smokeHealth({
 		baseUrl: 'https://worker.example',
 		expectedVersionTag: 'expected-sha',
-		fetchImpl: async () => Response.json({
-			...HEALTHY_PAYLOAD,
+		fetchImpl: async (url) => Response.json({
+			...(new URL(url).pathname === '/health/ready' ? READY_PAYLOAD : HEALTHY_PAYLOAD),
 			versionTag: 'previous-sha',
 		}),
 		delayImpl: async () => undefined,
@@ -62,4 +73,10 @@ test('fails after the bounded retry budget', async () => {
 
 function silentLogger() {
 	return { warn() {} };
+}
+
+function healthyFetch() {
+	return async (url) => Response.json(
+		new URL(url).pathname === '/health/ready' ? READY_PAYLOAD : HEALTHY_PAYLOAD,
+	);
 }

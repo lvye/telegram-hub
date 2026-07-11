@@ -20,7 +20,8 @@ const ITEM: CanonicalItem = {
 };
 
 describe('scheduled handler', () => {
-	const sendBatch = vi.fn(async (_messages: Parameters<Queue['sendBatch']>[0]) => undefined);
+	const sendDeliveryBatch = vi.fn(async (_messages: Parameters<Queue['sendBatch']>[0]) => undefined);
+	const sendIngestionBatch = vi.fn(async (_messages: Parameters<Queue['sendBatch']>[0]) => undefined);
 	const workerEnv: Env = {
 		CF_VERSION_METADATA: {
 			id: 'test-version-id',
@@ -30,13 +31,15 @@ describe('scheduled handler', () => {
 		DB: env.DB,
 		IT_HOME_CHAT_ID: 'test-it-home-chat',
 		TELEGRAM_BOT_TOKEN: 'test-token',
-		TELEGRAM_DELIVERY_QUEUE: { sendBatch } as unknown as Queue,
+		INGESTION_QUEUE: { sendBatch: sendIngestionBatch } as unknown as Queue,
+		TELEGRAM_DELIVERY_QUEUE: { sendBatch: sendDeliveryBatch } as unknown as Queue,
 		TWITTER_CHAT_ID: 'test-twitter-chat',
 		TWITTER_RSS_URL: 'https://example.com/twitter.xml',
 	};
 
 	beforeEach(async () => {
-		sendBatch.mockClear();
+		sendDeliveryBatch.mockClear();
+		sendIngestionBatch.mockClear();
 		await env.DB.batch([
 			env.DB.prepare('DELETE FROM source_runtime_state'),
 			env.DB.prepare('DELETE FROM deliveries'),
@@ -46,8 +49,7 @@ describe('scheduled handler', () => {
 		]);
 	});
 
-	it('runs ingestion at 04:00 when the every-minute cron fired', async () => {
-		vi.mocked(globalThis.fetch).mockImplementation(async () => rss('scheduled-guid'));
+	it('enqueues one job per due source without fetching in the cron invocation', async () => {
 		const controller = createScheduledController({
 			cron: UPDATE_CRON,
 			scheduledTime: new Date('2026-07-10T04:00:00Z'),
@@ -55,14 +57,41 @@ describe('scheduled handler', () => {
 
 		await worker.scheduled(controller, workerEnv);
 
-		expect(sendBatch).toHaveBeenCalledTimes(1);
-		expect(sendBatch.mock.calls[0][0]).toHaveLength(2);
+		expect(sendIngestionBatch).toHaveBeenCalledTimes(1);
+		expect(sendIngestionBatch.mock.calls[0][0]).toHaveLength(2);
+		expect(sendDeliveryBatch).not.toHaveBeenCalled();
+		expect(globalThis.fetch).not.toHaveBeenCalled();
 		const states = await env.DB.prepare(`
-			SELECT status, COUNT(*) AS count
-			FROM deliveries
-			GROUP BY status
-		`).all<{ status: string; count: number }>();
-		expect(states.results).toEqual([{ status: 'queued', count: 2 }]);
+			SELECT source_id, status, queue_token
+			FROM source_runtime_state
+			ORDER BY source_id
+		`).all<{ queue_token: string; source_id: string; status: string }>();
+		expect(states.results).toEqual([
+			{ source_id: 'rss:it_home', status: 'queued', queue_token: expect.any(String) },
+			{ source_id: 'rss:twitter', status: 'queued', queue_token: expect.any(String) },
+		]);
+
+		await worker.scheduled(controller, workerEnv);
+		expect(sendIngestionBatch).toHaveBeenCalledTimes(1);
+	});
+
+	it('releases source claims when the ingestion producer fails', async () => {
+		sendIngestionBatch.mockRejectedValueOnce(new Error('queue unavailable'));
+		const controller = createScheduledController({
+			cron: UPDATE_CRON,
+			scheduledTime: new Date('2026-07-10T04:00:00Z'),
+		});
+
+		await expect(worker.scheduled(controller, workerEnv)).rejects.toThrow('queue unavailable');
+		const states = await env.DB.prepare(`
+			SELECT status, queue_token
+			FROM source_runtime_state
+			ORDER BY source_id
+		`).all<{ queue_token: string | null; status: string }>();
+		expect(states.results).toEqual([
+			{ status: 'idle', queue_token: null },
+			{ status: 'idle', queue_token: null },
+		]);
 	});
 
 	it('runs only compaction for the cleanup cron', async () => {
@@ -78,7 +107,8 @@ describe('scheduled handler', () => {
 
 		await worker.scheduled(controller, workerEnv);
 
-		expect(sendBatch).not.toHaveBeenCalled();
+		expect(sendDeliveryBatch).not.toHaveBeenCalled();
+		expect(sendIngestionBatch).not.toHaveBeenCalled();
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 		const item = await env.DB.prepare('SELECT description, image_url, metadata_json FROM items').first<{
 			description: string | null;
@@ -88,17 +118,3 @@ describe('scheduled handler', () => {
 		expect(item).toEqual({ description: null, image_url: null, metadata_json: '{}' });
 	});
 });
-
-function rss(guid: string): Response {
-	return new Response(`
-		<rss><channel><item>
-			<guid>${guid}</guid>
-			<title>Scheduled item</title>
-			<description>Scheduled description</description>
-			<link>https://example.com/${guid}</link>
-			<pubDate>Fri, 10 Jul 2026 04:00:00 GMT</pubDate>
-		</item></channel></rss>
-	`, {
-		headers: { 'content-type': 'application/rss+xml' },
-	});
-}

@@ -6,21 +6,14 @@ upload_source_maps = true
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
-[vars]
-# Legacy catalog compatibility only. Production connector/provider configuration
-# is read from DB_V2 sources/source_connectors after the schema v2 cutover.
-TWITTER_SOURCE_PROVIDER = "nitter"
-NITTER_BASE_URL = "https://nitter.net/"
-
 [secrets]
 required = [
   "TELEGRAM_BOT_TOKEN",
   "IT_HOME_CHAT_ID",
-  "TWITTER_CHAT_ID",
-  "TWITTER_RSS_URL"
+  "TWITTER_CHAT_ID"
 ]
-# TwitterAPI.io bindings are optional so this version can be deployed before
-# the API key is provisioned. See .dev.vars.example and README.md.
+# TWITTERAPI_IO_API_KEY is optional and only required by an active
+# twitterapi-io.user-timeline connector.
 
 # Cron Triggers
 # Docs: https://developers.cloudflare.com/workers/platform/triggers/cron-triggers/
@@ -45,14 +38,9 @@ head_sampling_rate = 0.1
 
 [[d1_databases]]
 binding = "DB"
-database_name = "rss"
-database_id = "<your-database-id>"
-
-[[d1_databases]]
-binding = "DB_V2"
 database_name = "telegram-hub-prod"
-database_id = "<your-v2-database-id>"
-migrations_dir = "migrations_v2"
+database_id = "<your-database-id>"
+migrations_dir = "migrations"
 
 [[queues.producers]]
 binding = "TELEGRAM_DELIVERY_QUEUE"

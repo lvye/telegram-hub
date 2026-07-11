@@ -1,11 +1,11 @@
 import type { AppConfig } from '../config';
 import { dispatchReadyDeliveries } from '../delivery/dispatcher';
 import type { IngestionJob } from '../domain/ingestion';
-import { DeliveryRepositoryV2 } from '../persistence/delivery-repository-v2';
-import { SourceRuntimeStateRepositoryV2 } from '../persistence/source-runtime-state-repository-v2';
+import { DeliveryRepository } from '../persistence/delivery-repository';
+import { SourceRuntimeStateRepository } from '../persistence/source-runtime-state-repository';
 import { IngestionService } from './ingestion-service';
 import { defaultSourceAdapterRegistry, validateRuntimeTopology } from './ingest-sources';
-import { D1SourceCatalogV2 } from './source-catalog-v2';
+import { D1SourceCatalog } from './source-catalog';
 import { SourceHttpError } from './source-http-error';
 
 const MAX_DELAY_SECONDS = 86_400;
@@ -15,9 +15,9 @@ export async function consumeIngestionBatch(
 	env: Env,
 	config: AppConfig,
 ): Promise<void> {
-	const deliveryRepository = new DeliveryRepositoryV2(env.DB_V2);
-	const runtime = new SourceRuntimeStateRepositoryV2(env.DB_V2);
-	const catalog = new D1SourceCatalogV2(env.DB_V2, config);
+	const deliveryRepository = new DeliveryRepository(env.DB);
+	const runtime = new SourceRuntimeStateRepository(env.DB);
+	const catalog = new D1SourceCatalog(env.DB, config);
 	const sources = await catalog.list();
 	validateRuntimeTopology(config, sources);
 	const sourcesById = new Map(sources.map((source) => [source.sourceId, source]));
@@ -97,7 +97,7 @@ export async function consumeIngestionDeadLetterBatch(
 	batch: MessageBatch<IngestionJob>,
 	env: Env,
 ): Promise<void> {
-	const runtime = new SourceRuntimeStateRepositoryV2(env.DB_V2);
+	const runtime = new SourceRuntimeStateRepository(env.DB);
 	for (const message of batch.messages) {
 		if (!isIngestionJob(message.body)) {
 			console.error({ event: 'invalid_ingestion_dead_letter_job', queueMessageId: message.id });
@@ -132,7 +132,7 @@ export async function consumeIngestionDeadLetterBatch(
 
 async function handleUnavailableJob(
 	message: Message<IngestionJob>,
-	runtime: SourceRuntimeStateRepositoryV2,
+	runtime: SourceRuntimeStateRepository,
 	job: IngestionJob,
 	now: number,
 ): Promise<void> {
@@ -154,7 +154,7 @@ async function handleUnavailableJob(
 
 async function handleIngestionFailure(
 	message: Message<IngestionJob>,
-	runtime: SourceRuntimeStateRepositoryV2,
+	runtime: SourceRuntimeStateRepository,
 	job: IngestionJob,
 	leaseToken: string,
 	error: unknown,

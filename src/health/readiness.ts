@@ -1,6 +1,6 @@
 import type { AppConfig } from '../config';
 import type { SourceReadinessIssue } from '../persistence/source-runtime-state-repository';
-import { SourceRuntimeStateRepositoryV2 } from '../persistence/source-runtime-state-repository-v2';
+import { SourceRuntimeStateRepository } from '../persistence/source-runtime-state-repository';
 
 export interface ReadinessSnapshot {
 	status: 'not_ready' | 'ready';
@@ -13,7 +13,7 @@ export async function sourceReadiness(
 	config: AppConfig,
 	now = Math.floor(Date.now() / 1_000),
 ): Promise<ReadinessSnapshot> {
-	const repository = new SourceRuntimeStateRepositoryV2(env.DB_V2);
+	const repository = new SourceRuntimeStateRepository(env.DB);
 	const [activeSources, issues] = await Promise.all([
 		repository.countActiveSources(),
 		repository.listReadinessIssues(

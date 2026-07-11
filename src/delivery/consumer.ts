@@ -1,6 +1,6 @@
 import { findDestination, type AppConfig } from '../config';
 import type { DeliveryJob, DeliveryLease } from '../domain/delivery';
-import { DeliveryRepositoryV2 } from '../persistence/delivery-repository-v2';
+import { DeliveryRepository } from '../persistence/delivery-repository';
 import { PermanentDeliveryError, RetryableDeliveryError } from './errors';
 import { TelegramClient } from './telegram-client';
 import { formatTelegramMessage } from './telegram-formatter';
@@ -12,7 +12,7 @@ export async function consumeDeliveryBatch(
 	env: Env,
 	config: AppConfig,
 ): Promise<void> {
-	const repository = new DeliveryRepositoryV2(env.DB_V2);
+	const repository = new DeliveryRepository(env.DB);
 	const telegram = new TelegramClient(
 		requiredBinding(env.TELEGRAM_BOT_TOKEN, 'TELEGRAM_BOT_TOKEN'),
 		config.telegram.requestTimeoutMs,
@@ -28,7 +28,7 @@ export async function consumeDeadLetterBatch(
 	env: Env,
 	config: AppConfig,
 ): Promise<void> {
-	const repository = new DeliveryRepositoryV2(env.DB_V2);
+	const repository = new DeliveryRepository(env.DB);
 
 	for (const message of batch.messages) {
 		if (!isDeliveryJob(message.body)) {
@@ -75,7 +75,7 @@ export async function consumeDeadLetterBatch(
 async function consumeMessage(
 	message: Message<DeliveryJob>,
 	config: AppConfig,
-	repository: DeliveryRepositoryV2,
+	repository: DeliveryRepository,
 	telegram: TelegramClient,
 ): Promise<void> {
 	if (!isDeliveryJob(message.body)) {
@@ -166,7 +166,7 @@ async function deliver(
 async function handleUnavailableDelivery(
 	message: Message<DeliveryJob>,
 	config: AppConfig,
-	repository: DeliveryRepositoryV2,
+	repository: DeliveryRepository,
 	now: number,
 ): Promise<void> {
 	const state = await repository.getState(message.body.deliveryId);
@@ -201,7 +201,7 @@ async function handleUnavailableDelivery(
 async function handleDeliveryFailure(
 	message: Message<DeliveryJob>,
 	config: AppConfig,
-	repository: DeliveryRepositoryV2,
+	repository: DeliveryRepository,
 	lease: DeliveryLease,
 	error: unknown,
 ): Promise<void> {

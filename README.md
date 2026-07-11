@@ -56,7 +56,7 @@ Worker 仅保留只读的 `GET /health` 和 `GET /health/ready`。readiness 会�
 ```text
 src/
 ├── worker.ts                    # scheduled / queue / fetch 入口
-├── config.ts                    # typed bindings、source 输入与 destination 配置
+├── config.ts                    # typed bindings 与 destination 配置
 ├── ingestion/                   # Source Catalog、adapter registry、规范化与编排
 ├── delivery/                    # Queue dispatcher/consumer、Telegram adapter
 ├── domain/                      # item/delivery 类型
@@ -65,8 +65,7 @@ src/
 ├── parsers/                     # 数据源解析器
 └── utils/                       # 文本与 XML 工具
 
-migrations/                      # 旧 DB 的迁移历史（观察期保留）
-migrations_v2/                   # 当前生产 DB_V2 schema 的唯一事实来源
+migrations/                      # 生产 D1 schema 的唯一事实来源
 test/                            # workerd 集成测试
 ```
 
@@ -88,7 +87,7 @@ npx wrangler queues create source-ingestion
 npx wrangler queues create source-ingestion-dlq
 ```
 
-将 D1 命令返回的 `database_id` 写入 `wrangler.toml` 的 `DB_V2` binding。现有部署还保留只读的旧 `DB` binding 供观察和数据核对；全新环境不需要导入旧表。Queue 名称已经在配置中声明。
+将 D1 命令返回的 `database_id` 写入 `wrangler.toml` 的唯一 `DB` binding。Queue 名称已经在配置中声明。
 
 ### 3. 配置密钥
 
@@ -96,10 +95,9 @@ npx wrangler queues create source-ingestion-dlq
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put IT_HOME_CHAT_ID
 npx wrangler secret put TWITTER_CHAT_ID
-npx wrangler secret put TWITTER_RSS_URL
 ```
 
-上述四个基础 binding 通过 `[secrets].required` 声明；缺失时部署会失败，而不是在 Cron 深层才报错。TwitterAPI.io binding 是可选的，便于保留凭据但通过 provider 开关暂停调用。
+上述三个基础 binding 通过 `[secrets].required` 声明；缺失时部署会失败，而不是在 Cron 深层才报错。TwitterAPI.io key 是可选的，仅在启用相应 connector 时读取。
 
 ### Twitter provider 切换
 
@@ -120,15 +118,7 @@ npx wrangler secret put TWITTERAPI_IO_API_KEY
 
 通过 Cloudflare Dashboard 或一次性的 `wrangler d1 execute --remote --command` 事务更新运行数据，并同步维护 `source_routes`；不要把真实账号 INSERT 放进 migration、seed SQL 或其他 Git 跟踪文件。每个 connector 使用稳定 key、不带 `@` 的 `userName`、`active/paused/archived` 状态和独立轮询参数；暂停 connector 不会删除 cursor/high-water。
 
-可选调节项如下，默认每 5 分钟调用一次、每次 invocation 最多 1 页（每页最多 20 条）、不包含 replies：
-
-```bash
-npx wrangler secret put TWITTERAPI_IO_POLL_MINUTES
-npx wrangler secret put TWITTERAPI_IO_MAX_PAGES
-npx wrangler secret put TWITTERAPI_IO_INCLUDE_REPLIES
-```
-
-每个 connector 使用独立、稳定的 checkpoint；若单次达到 page budget，下一次到期 Cron 会从 `source_connector_checkpoints` 中保存的 cursor 续拉。
+轮询间隔、page budget 和 replies 开关属于每个 connector 的 `poll_interval_seconds` / `config_json`，不再由全局 Worker binding 控制。每个 connector 使用独立、稳定的 checkpoint；若单次达到 page budget，下一次到期 Cron 会从 `source_connector_checkpoints` 中保存的 cursor 续拉。
 
 TwitterAPI.io adapter 兼容常见媒体字段，并在必要时从明确的 tweet photo 页面读取 Open Graph 图片。该 endpoint 官方不建议高频轮询，调整 cadence/page budget 前请先评估调用成本。[接口文档](https://docs.twitterapi.io/api-reference/endpoint/get_user_last_tweets)
 
@@ -137,12 +127,10 @@ TwitterAPI.io adapter 兼容常见媒体字段，并在必要时从明确的 twe
 ### 4. 应用数据库迁移
 
 ```bash
-npm run db:v2:migrate:remote
+npm run db:migrate:remote
 ```
 
-`migrations_v2` 创建规范化 topology、connector runtime/checkpoint、canonical content、provider observation 和 destination delivery 表。生产 Worker 只对 `DB_V2` 读写。
-
-旧 `DB` 在观察期作为切换时点的只读快照保留，不再镜像新的抓取或投递状态。切换后的回滚不是自动的：若必须恢复旧代码，应先把 v2 新增数据重新同步到旧模型；正常故障处理采用 roll-forward。完成观察和备份后，再通过独立变更移除旧 binding、兼容 repository 与 `migrations`。
+`migrations` 创建规范化 topology、connector runtime/checkpoint、canonical content、provider observation 和 destination delivery 表。生产 Worker 只绑定并读写这一套 D1 schema。
 
 ### 5. 验证并部署
 
@@ -173,19 +161,16 @@ curl "http://localhost:8787/cdn-cgi/handler/scheduled?cron=0+4+*+*+*&format=json
 npm run cf:types:check            # Cloudflare binding 类型
 npm run ts:check                  # TypeScript
 npm test                          # workerd tests
-npm run db:schema:v2:check        # v2 schema、约束与索引计划
+npm run db:schema:check           # schema、约束与索引计划
 npm run db:migrate:local          # 当前数据库本地 migration
 npm run db:migrations:list:remote # 当前数据库远端 migration 状态
 npm run db:migrate:remote         # 当前数据库远端 migration（CI 使用）
-npm run db:v2:migrations:list:remote # v2 数据库远端 migration 状态
-npm run db:v2:migrate:remote      # v2 数据库远端 migration（CI 使用）
 npm run deploy:dry                # bundle + Workers 校验
 npm run check                     # 完整检查
 ```
 
-当前部署同时绑定旧 `DB` 与规范化 `DB_V2`，但只有 `DB_V2` 承担生产读写。
-旧库是切换时点的观察快照，不会继续接收 shadow mirror；确认 v2 运行稳定、
-完成备份和保留期后，才能删除旧数据库及其兼容代码。
+当前部署只绑定 `telegram-hub-prod` 为 `DB`。来源、运行状态、checkpoint、
+canonical content 和投递状态均以该库为唯一事实来源。
 
 ## 添加数据源
 

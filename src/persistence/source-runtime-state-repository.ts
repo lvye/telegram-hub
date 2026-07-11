@@ -31,34 +31,32 @@ export interface SourceRuntimeState {
 	updatedAt: number;
 }
 
-interface SourceRuntimeStateRow {
-	source_id: string;
-	adapter_key: string;
-	identity_namespace: string;
-	destination_key: string;
-	poll_every_seconds: number;
-	status: SourceRuntimeStatus;
-	next_poll_at: number;
-	queue_token: string | null;
-	queued_at: number | null;
-	queue_expires_at: number | null;
-	lease_token: string | null;
-	lease_expires_at: number | null;
-	consecutive_failures: number;
-	last_attempt_at: number | null;
-	last_success_at: number | null;
-	last_error_code: string | null;
-	last_error: string | null;
-	created_at: number;
-	updated_at: number;
-}
-
 export interface SourceReadinessIssue {
 	sourceId: string;
 	status: SourceRuntimeStatus;
 	lastSuccessAt: number | null;
 	staleAfterSeconds: number;
 	reason: 'blocked' | 'dead' | 'never_succeeded' | 'stale';
+}
+
+interface RuntimeRow {
+	source_id: string;
+	adapter_key: string;
+	identity_namespace: string;
+	destination_key: string;
+	poll_every_seconds: number;
+	state: 'idle' | 'queued' | 'running' | 'blocked' | 'dead';
+	next_run_at: number;
+	claim_token: string | null;
+	claimed_at: number | null;
+	claim_expires_at: number | null;
+	failure_count: number;
+	last_attempt_at: number | null;
+	last_success_at: number | null;
+	last_error_code: string | null;
+	last_error: string | null;
+	created_at: number;
+	updated_at: number;
 }
 
 const MAX_ERROR_LENGTH = 1_000;
@@ -68,63 +66,15 @@ export class SourceRuntimeStateRepository {
 
 	async syncSources(sources: SourceDefinition[], scheduledAt: number): Promise<void> {
 		const statements = sources.map((source) => this.db.prepare(`
-			INSERT INTO source_runtime_state (
-				source_id,
-				adapter_key,
-				identity_namespace,
-				destination_key,
-				poll_every_seconds,
-				status,
-				next_poll_at,
-				created_at,
-				updated_at
+			INSERT INTO source_connector_state (
+				connector_id, state, next_run_at, created_at, updated_at
 			)
-			VALUES (?, ?, ?, ?, ?, 'idle', ?, ?, ?)
-			ON CONFLICT (source_id) DO UPDATE SET
-				adapter_key = excluded.adapter_key,
-				identity_namespace = excluded.identity_namespace,
-				destination_key = excluded.destination_key,
-				poll_every_seconds = excluded.poll_every_seconds,
-				status = CASE
-					WHEN source_runtime_state.status = 'paused' THEN 'idle'
-					ELSE source_runtime_state.status
-				END,
-				next_poll_at = CASE
-					WHEN source_runtime_state.status = 'paused' THEN excluded.next_poll_at
-					ELSE source_runtime_state.next_poll_at
-				END,
-				updated_at = excluded.updated_at
-		`).bind(
-			source.sourceId,
-			source.adapterKey,
-			source.identityNamespace,
-			source.destinationKey,
-			source.pollEveryMinutes * 60,
-			nextDueAt(scheduledAt, source.pollEveryMinutes),
-			scheduledAt,
-			scheduledAt,
-		));
-
-		statements.push(this.db.prepare(`
-			UPDATE source_runtime_state
-			SET
-				status = 'paused',
-				queue_token = NULL,
-				queued_at = NULL,
-				queue_expires_at = NULL,
-				lease_token = NULL,
-				lease_expires_at = NULL,
-				updated_at = ?
-			WHERE source_id NOT IN (
-				SELECT CAST(value AS TEXT) FROM json_each(?)
-			)
-				AND status <> 'paused'
-		`).bind(
-			scheduledAt,
-			JSON.stringify(sources.map(({ sourceId }) => sourceId)),
-		));
-
-		await this.db.batch(statements);
+			SELECT id, 'idle', ?, ?, ?
+			FROM source_connectors
+			WHERE connector_key = ? AND status = 'active'
+			ON CONFLICT (connector_id) DO NOTHING
+		`).bind(scheduledAt, scheduledAt, scheduledAt, source.sourceId));
+		if (statements.length > 0) await this.db.batch(statements);
 	}
 
 	async acquireLease(
@@ -133,52 +83,65 @@ export class SourceRuntimeStateRepository {
 		now: number,
 		leaseSeconds: number,
 	): Promise<boolean> {
-		assertNonEmpty(sourceId, 'sourceId');
-		assertNonEmpty(leaseToken, 'leaseToken');
-		if (!Number.isInteger(leaseSeconds) || leaseSeconds <= 0) {
-			throw new Error('leaseSeconds must be a positive integer');
-		}
-
 		const result = await this.db.prepare(`
-			UPDATE source_runtime_state
+			UPDATE source_connector_state
 			SET
-				status = 'running',
-				queue_token = NULL,
-				queued_at = NULL,
-				queue_expires_at = NULL,
-				lease_token = ?,
-				lease_expires_at = ?,
+				state = 'running',
+				claim_token = ?,
+				claimed_at = ?,
+				claim_expires_at = ?,
 				last_attempt_at = ?,
 				updated_at = ?
-			WHERE source_id = ?
-				AND status IN ('idle', 'backoff', 'running')
-				AND (lease_token IS NULL OR lease_expires_at <= ?)
+			WHERE connector_id = (
+				SELECT id FROM source_connectors WHERE connector_key = ? AND status = 'active'
+			)
+				AND (
+					state = 'idle'
+					OR (state = 'running' AND claim_expires_at <= ?)
+				)
 		`).bind(
 			leaseToken,
+			now,
 			now + leaseSeconds,
 			now,
 			now,
 			sourceId,
 			now,
 		).run();
-
 		return (result.meta.changes ?? 0) === 1;
 	}
 
 	async listDueSourceIds(now: number, limit = 100): Promise<string[]> {
 		const result = await this.db.prepare(`
-			SELECT source_id
-			FROM source_runtime_state
-			WHERE next_poll_at <= ?
-				AND (
-					status IN ('idle', 'backoff')
-					OR (status = 'queued' AND queue_expires_at <= ?)
-					OR (status = 'running' AND lease_expires_at <= ?)
-				)
-			ORDER BY next_poll_at ASC, source_id ASC
-			LIMIT ?
-		`).bind(now, now, now, limit).all<{ source_id: string }>();
+			WITH due AS (
+				SELECT state.connector_id, state.next_run_at
+				FROM source_connector_state AS state
+				WHERE state.state = 'idle' AND state.next_run_at <= ?
 
+				UNION ALL
+
+				SELECT state.connector_id, state.next_run_at
+				FROM source_connector_state AS state
+				WHERE state.state = 'queued'
+					AND state.next_run_at <= ?
+					AND state.claim_expires_at <= ?
+
+				UNION ALL
+
+				SELECT state.connector_id, state.next_run_at
+				FROM source_connector_state AS state
+				WHERE state.state = 'running'
+					AND state.next_run_at <= ?
+					AND state.claim_expires_at <= ?
+			)
+			SELECT connectors.connector_key AS source_id
+			FROM due
+			JOIN source_connectors AS connectors ON connectors.id = due.connector_id
+			JOIN sources ON sources.id = connectors.source_id
+			WHERE connectors.status = 'active' AND sources.status = 'active'
+			ORDER BY due.next_run_at, connectors.connector_key
+			LIMIT ?
+		`).bind(now, now, now, now, now, limit).all<{ source_id: string }>();
 		return result.results.map(({ source_id }) => source_id);
 	}
 
@@ -189,21 +152,20 @@ export class SourceRuntimeStateRepository {
 		claimSeconds: number,
 	): Promise<boolean> {
 		const result = await this.db.prepare(`
-			UPDATE source_runtime_state
+			UPDATE source_connector_state
 			SET
-				status = 'queued',
-				queue_token = ?,
-				queued_at = ?,
-				queue_expires_at = ?,
-				lease_token = NULL,
-				lease_expires_at = NULL,
+				state = 'queued',
+				claim_token = ?,
+				claimed_at = ?,
+				claim_expires_at = ?,
 				updated_at = ?
-			WHERE source_id = ?
-				AND next_poll_at <= ?
+			WHERE connector_id = (
+				SELECT id FROM source_connectors WHERE connector_key = ? AND status = 'active'
+			)
+				AND next_run_at <= ?
 				AND (
-					status IN ('idle', 'backoff')
-					OR (status = 'queued' AND queue_expires_at <= ?)
-					OR (status = 'running' AND lease_expires_at <= ?)
+					state = 'idle'
+					OR (state IN ('queued', 'running') AND claim_expires_at <= ?)
 				)
 		`).bind(
 			queueToken,
@@ -213,25 +175,25 @@ export class SourceRuntimeStateRepository {
 			sourceId,
 			now,
 			now,
-			now,
 		).run();
-
 		return (result.meta.changes ?? 0) === 1;
 	}
 
 	async releaseQueueClaim(sourceId: string, queueToken: string, now: number): Promise<boolean> {
 		const result = await this.db.prepare(`
-			UPDATE source_runtime_state
+			UPDATE source_connector_state
 			SET
-				status = 'idle',
-				queue_token = NULL,
-				queued_at = NULL,
-				queue_expires_at = NULL,
-				next_poll_at = MIN(next_poll_at, ?),
+				state = 'idle',
+				claim_token = NULL,
+				claimed_at = NULL,
+				claim_expires_at = NULL,
+				next_run_at = MIN(next_run_at, ?),
 				updated_at = ?
-			WHERE source_id = ? AND status = 'queued' AND queue_token = ?
+			WHERE connector_id = (
+				SELECT id FROM source_connectors WHERE connector_key = ?
+			)
+				AND state = 'queued' AND claim_token = ?
 		`).bind(now, now, sourceId, queueToken).run();
-
 		return (result.meta.changes ?? 0) === 1;
 	}
 
@@ -243,22 +205,23 @@ export class SourceRuntimeStateRepository {
 		leaseSeconds: number,
 	): Promise<boolean> {
 		const result = await this.db.prepare(`
-			UPDATE source_runtime_state
+			UPDATE source_connector_state
 			SET
-				status = 'running',
-				queue_token = NULL,
-				queued_at = NULL,
-				queue_expires_at = NULL,
-				lease_token = ?,
-				lease_expires_at = ?,
+				state = 'running',
+				claim_token = ?,
+				claimed_at = ?,
+				claim_expires_at = ?,
 				last_attempt_at = ?,
 				updated_at = ?
-			WHERE source_id = ?
-				AND status = 'queued'
-				AND queue_token = ?
-				AND next_poll_at <= ?
+			WHERE connector_id = (
+				SELECT id FROM source_connectors WHERE connector_key = ? AND status = 'active'
+			)
+				AND state = 'queued'
+				AND claim_token = ?
+				AND next_run_at <= ?
 		`).bind(
 			leaseToken,
+			now,
 			now + leaseSeconds,
 			now,
 			now,
@@ -266,7 +229,6 @@ export class SourceRuntimeStateRepository {
 			queueToken,
 			now,
 		).run();
-
 		return (result.meta.changes ?? 0) === 1;
 	}
 
@@ -274,66 +236,61 @@ export class SourceRuntimeStateRepository {
 		sourceId: string,
 		leaseToken: string,
 		queueToken: string,
-		nextPollAt: number,
-		queueExpiresAt: number,
+		nextRunAt: number,
+		claimExpiresAt: number,
 		errorCode: string,
 		errorMessage: string,
 		now: number,
 	): Promise<boolean> {
 		const result = await this.db.prepare(`
-			UPDATE source_runtime_state
+			UPDATE source_connector_state
 			SET
-				status = 'queued',
-				next_poll_at = ?,
-				queue_token = ?,
-				queued_at = ?,
-				queue_expires_at = ?,
-				lease_token = NULL,
-				lease_expires_at = NULL,
-				consecutive_failures = consecutive_failures + 1,
+				state = 'queued',
+				next_run_at = ?,
+				claim_token = ?,
+				claimed_at = ?,
+				claim_expires_at = ?,
+				failure_count = failure_count + 1,
 				last_error_code = ?,
 				last_error = ?,
 				updated_at = ?
-			WHERE source_id = ? AND status = 'running' AND lease_token = ?
+			WHERE connector_id = (
+				SELECT id FROM source_connectors WHERE connector_key = ?
+			)
+				AND state = 'running' AND claim_token = ?
 		`).bind(
-			nextPollAt,
+			nextRunAt,
 			queueToken,
 			now,
-			queueExpiresAt,
+			claimExpiresAt,
 			errorCode,
 			errorMessage.slice(0, MAX_ERROR_LENGTH),
 			now,
 			sourceId,
 			leaseToken,
 		).run();
-
 		return (result.meta.changes ?? 0) === 1;
 	}
 
-	async reconcileDeadLetter(
-		sourceId: string,
-		queueToken: string,
-		now: number,
-	): Promise<boolean> {
+	async reconcileDeadLetter(sourceId: string, queueToken: string, now: number): Promise<boolean> {
 		const result = await this.db.prepare(`
-			UPDATE source_runtime_state
+			UPDATE source_connector_state
 			SET
-				status = 'dead',
-				queue_token = NULL,
-				queued_at = NULL,
-				queue_expires_at = NULL,
-				lease_token = NULL,
-				lease_expires_at = NULL,
+				state = 'dead',
+				claim_token = NULL,
+				claimed_at = NULL,
+				claim_expires_at = NULL,
 				last_error_code = 'INGESTION_QUEUE_DEAD_LETTERED',
 				last_error = COALESCE(last_error, 'Cloudflare Queue retries were exhausted'),
 				updated_at = ?
-			WHERE source_id = ?
+			WHERE connector_id = (
+				SELECT id FROM source_connectors WHERE connector_key = ?
+			)
 				AND (
-					(status = 'queued' AND queue_token = ?)
-					OR (status = 'running' AND lease_expires_at <= ?)
+					(state = 'queued' AND claim_token = ?)
+					OR (state = 'running' AND claim_expires_at <= ?)
 				)
 		`).bind(now, sourceId, queueToken, now).run();
-
 		return (result.meta.changes ?? 0) === 1;
 	}
 
@@ -344,54 +301,23 @@ export class SourceRuntimeStateRepository {
 		errorMessage: string,
 		now: number,
 	): Promise<boolean> {
-		const result = await this.db.prepare(`
-			UPDATE source_runtime_state
-			SET
-				status = 'blocked',
-				lease_token = NULL,
-				lease_expires_at = NULL,
-				consecutive_failures = consecutive_failures + 1,
-				last_error_code = ?,
-				last_error = ?,
-				updated_at = ?
-			WHERE source_id = ? AND status = 'running' AND lease_token = ?
-		`).bind(
-			errorCode,
-			errorMessage.slice(0, MAX_ERROR_LENGTH),
-			now,
+		return this.finishFailure(
 			sourceId,
 			leaseToken,
-		).run();
-
-		return (result.meta.changes ?? 0) === 1;
+			'blocked',
+			null,
+			errorCode,
+			errorMessage,
+			now,
+		);
 	}
 
-	async recoverDeadSources(now: number, deadRecoverySeconds: number): Promise<number> {
-		const result = await this.db.prepare(`
-			UPDATE source_runtime_state
-			SET
-				status = 'backoff',
-				next_poll_at = ?,
-				updated_at = ?,
-				last_error_code = 'INGESTION_DLQ_RECOVERY',
-				last_error = 'Retrying source after ingestion DLQ recovery cooldown'
-			WHERE status = 'dead' AND updated_at <= ?
-		`).bind(now, now, now - deadRecoverySeconds).run();
-		return result.meta.changes ?? 0;
+	async recoverDeadSources(now: number, cooldownSeconds: number): Promise<number> {
+		return this.recover('dead', now, cooldownSeconds, 'INGESTION_DLQ_RECOVERY');
 	}
 
-	async recoverBlockedSources(now: number, blockedRecoverySeconds: number): Promise<number> {
-		const result = await this.db.prepare(`
-			UPDATE source_runtime_state
-			SET
-				status = 'backoff',
-				next_poll_at = ?,
-				updated_at = ?,
-				last_error_code = 'INGESTION_BLOCKED_RECOVERY',
-				last_error = 'Retrying blocked source after recovery cooldown'
-			WHERE status = 'blocked' AND updated_at <= ?
-		`).bind(now, now, now - blockedRecoverySeconds).run();
-		return result.meta.changes ?? 0;
+	async recoverBlockedSources(now: number, cooldownSeconds: number): Promise<number> {
+		return this.recover('blocked', now, cooldownSeconds, 'INGESTION_BLOCKED_RECOVERY');
 	}
 
 	async listReadinessIssues(
@@ -399,24 +325,30 @@ export class SourceRuntimeStateRepository {
 		minimumStaleSeconds: number,
 		pollMultiplier: number,
 	): Promise<SourceReadinessIssue[]> {
-		const result = await this.db.prepare(`
-			SELECT source_id, status, last_success_at, poll_every_seconds, created_at
-			FROM source_runtime_state
-			WHERE status <> 'paused'
-			ORDER BY source_id
-		`).all<Pick<SourceRuntimeStateRow,
-			'source_id' | 'status' | 'last_success_at' | 'poll_every_seconds' | 'created_at'
-		>>();
+		const result = await this.db.prepare(`${runtimeSelect()}
+			WHERE connectors.status = 'active'
+				AND sources.status = 'active'
+				AND EXISTS (
+					SELECT 1
+					FROM source_routes AS routes
+					JOIN destinations ON destinations.id = routes.destination_id
+					WHERE routes.source_id = sources.id
+						AND routes.status = 'active'
+						AND destinations.status = 'active'
+				)
+			ORDER BY connectors.connector_key
+		`).all<RuntimeRow>();
 
 		return result.results.flatMap((row) => {
 			const staleAfterSeconds = Math.max(
 				minimumStaleSeconds,
 				row.poll_every_seconds * pollMultiplier,
 			);
-			const reason = readinessReason(row, now, staleAfterSeconds);
+			const status = runtimeStatus(row);
+			const reason = readinessReason(status, row, now, staleAfterSeconds);
 			return reason ? [{
 				sourceId: row.source_id,
-				status: row.status,
+				status,
 				lastSuccessAt: row.last_success_at,
 				staleAfterSeconds,
 				reason,
@@ -427,8 +359,17 @@ export class SourceRuntimeStateRepository {
 	async countActiveSources(): Promise<number> {
 		const row = await this.db.prepare(`
 			SELECT COUNT(*) AS count
-			FROM source_runtime_state
-			WHERE status <> 'paused'
+			FROM source_connectors AS connectors
+			JOIN sources ON sources.id = connectors.source_id
+			WHERE connectors.status = 'active' AND sources.status = 'active'
+				AND EXISTS (
+					SELECT 1
+					FROM source_routes AS routes
+					JOIN destinations ON destinations.id = routes.destination_id
+					WHERE routes.source_id = sources.id
+						AND routes.status = 'active'
+						AND destinations.status = 'active'
+				)
 		`).first<{ count: number }>();
 		return row?.count ?? 0;
 	}
@@ -436,127 +377,170 @@ export class SourceRuntimeStateRepository {
 	async markSucceeded(
 		sourceId: string,
 		leaseToken: string,
-		nextPollAt: number,
+		nextRunAt: number,
 		now: number,
 	): Promise<boolean> {
 		const result = await this.db.prepare(`
-			UPDATE source_runtime_state
+			UPDATE source_connector_state
 			SET
-				status = 'idle',
-				next_poll_at = ?,
-				lease_token = NULL,
-				lease_expires_at = NULL,
-				consecutive_failures = 0,
+				state = 'idle',
+				next_run_at = ?,
+				claim_token = NULL,
+				claimed_at = NULL,
+				claim_expires_at = NULL,
+				failure_count = 0,
 				last_success_at = ?,
 				last_error_code = NULL,
 				last_error = NULL,
 				updated_at = ?
-			WHERE source_id = ? AND status = 'running' AND lease_token = ?
-		`).bind(nextPollAt, now, now, sourceId, leaseToken).run();
-
+			WHERE connector_id = (
+				SELECT id FROM source_connectors WHERE connector_key = ?
+			)
+				AND state = 'running' AND claim_token = ?
+		`).bind(nextRunAt, now, now, sourceId, leaseToken).run();
 		return (result.meta.changes ?? 0) === 1;
 	}
 
 	async markFailed(
 		sourceId: string,
 		leaseToken: string,
-		nextPollAt: number,
+		nextRunAt: number,
+		errorCode: string,
+		errorMessage: string,
+		now: number,
+	): Promise<boolean> {
+		return this.finishFailure(
+			sourceId,
+			leaseToken,
+			'idle',
+			nextRunAt,
+			errorCode,
+			errorMessage,
+			now,
+		);
+	}
+
+	async get(sourceId: string): Promise<SourceRuntimeState | null> {
+		const row = await this.db.prepare(`${runtimeSelect()}
+			WHERE connectors.connector_key = ?
+		`).bind(sourceId).first<RuntimeRow>();
+		return row ? mapState(row) : null;
+	}
+
+	private async finishFailure(
+		sourceId: string,
+		leaseToken: string,
+		state: 'blocked' | 'idle',
+		nextRunAt: number | null,
 		errorCode: string,
 		errorMessage: string,
 		now: number,
 	): Promise<boolean> {
 		const result = await this.db.prepare(`
-			UPDATE source_runtime_state
+			UPDATE source_connector_state
 			SET
-				status = 'backoff',
-				next_poll_at = ?,
-				lease_token = NULL,
-				lease_expires_at = NULL,
-				consecutive_failures = consecutive_failures + 1,
+				state = ?,
+				next_run_at = COALESCE(?, next_run_at),
+				claim_token = NULL,
+				claimed_at = NULL,
+				claim_expires_at = NULL,
+				failure_count = failure_count + 1,
 				last_error_code = ?,
 				last_error = ?,
 				updated_at = ?
-			WHERE source_id = ? AND status = 'running' AND lease_token = ?
+			WHERE connector_id = (
+				SELECT id FROM source_connectors WHERE connector_key = ?
+			)
+				AND state = 'running' AND claim_token = ?
 		`).bind(
-			nextPollAt,
+			state,
+			nextRunAt,
 			errorCode,
 			errorMessage.slice(0, MAX_ERROR_LENGTH),
 			now,
 			sourceId,
 			leaseToken,
 		).run();
-
 		return (result.meta.changes ?? 0) === 1;
 	}
 
-	async get(sourceId: string): Promise<SourceRuntimeState | null> {
-		const row = await this.db.prepare(`
-			SELECT
-				source_id,
-				adapter_key,
-				identity_namespace,
-				destination_key,
-				poll_every_seconds,
-				status,
-				next_poll_at,
-				queue_token,
-				queued_at,
-				queue_expires_at,
-				lease_token,
-				lease_expires_at,
-				consecutive_failures,
-				last_attempt_at,
-				last_success_at,
-				last_error_code,
-				last_error,
-				created_at,
-				updated_at
-			FROM source_runtime_state
-			WHERE source_id = ?
-		`).bind(sourceId).first<SourceRuntimeStateRow>();
-
-		return row ? mapState(row) : null;
+	private async recover(
+		state: 'blocked' | 'dead',
+		now: number,
+		cooldownSeconds: number,
+		errorCode: string,
+	): Promise<number> {
+		const result = await this.db.prepare(`
+			UPDATE source_connector_state
+			SET
+				state = 'idle',
+				next_run_at = ?,
+				last_error_code = ?,
+				last_error = 'Retrying source after recovery cooldown',
+				updated_at = ?
+			WHERE state = ? AND updated_at <= ?
+		`).bind(now, errorCode, now, state, now - cooldownSeconds).run();
+		return result.meta.changes ?? 0;
 	}
 }
 
-function readinessReason(
-	row: Pick<SourceRuntimeStateRow, 'created_at' | 'last_success_at' | 'status'>,
-	now: number,
-	staleAfterSeconds: number,
-): SourceReadinessIssue['reason'] | null {
-	if (row.status === 'blocked') return 'blocked';
-	if (row.status === 'dead') return 'dead';
-	if (row.last_success_at === null) {
-		return now - row.created_at > staleAfterSeconds ? 'never_succeeded' : null;
-	}
-	return now - row.last_success_at > staleAfterSeconds ? 'stale' : null;
+function runtimeSelect(): string {
+	return `
+		SELECT
+			connectors.connector_key AS source_id,
+			connectors.adapter_key,
+			sources.identity_namespace,
+			(
+				SELECT destinations.destination_key
+				FROM source_routes AS routes
+				JOIN destinations ON destinations.id = routes.destination_id
+				WHERE routes.source_id = sources.id
+					AND routes.status = 'active'
+					AND destinations.status = 'active'
+				ORDER BY destinations.destination_key
+				LIMIT 1
+			) AS destination_key,
+			connectors.poll_interval_seconds AS poll_every_seconds,
+			state.state,
+			state.next_run_at,
+			state.claim_token,
+			state.claimed_at,
+			state.claim_expires_at,
+			state.failure_count,
+			state.last_attempt_at,
+			state.last_success_at,
+			state.last_error_code,
+			state.last_error,
+			state.created_at,
+			state.updated_at
+		FROM source_connector_state AS state
+		JOIN source_connectors AS connectors ON connectors.id = state.connector_id
+		JOIN sources ON sources.id = connectors.source_id
+	`;
 }
 
-export function nextDueAt(scheduledAt: number, pollEveryMinutes: number): number {
-	if (!Number.isInteger(pollEveryMinutes) || pollEveryMinutes <= 0) {
-		throw new Error('pollEveryMinutes must be a positive integer');
-	}
-	const minute = Math.floor(scheduledAt / 60);
-	const remainder = minute % pollEveryMinutes;
-	const minutesUntilDue = remainder === 0 ? 0 : pollEveryMinutes - remainder;
-	return scheduledAt + minutesUntilDue * 60;
+function runtimeStatus(row: RuntimeRow): SourceRuntimeStatus {
+	if (row.state === 'idle' && row.last_error_code) return 'backoff';
+	return row.state;
 }
 
-function mapState(row: SourceRuntimeStateRow): SourceRuntimeState {
+function mapState(row: RuntimeRow): SourceRuntimeState {
+	const queued = row.state === 'queued';
+	const running = row.state === 'running';
 	return {
 		sourceId: row.source_id,
 		adapterKey: row.adapter_key,
 		identityNamespace: row.identity_namespace,
 		destinationKey: row.destination_key,
 		pollEverySeconds: row.poll_every_seconds,
-		status: row.status,
-		nextPollAt: row.next_poll_at,
-		queueToken: row.queue_token,
-		queuedAt: row.queued_at,
-		queueExpiresAt: row.queue_expires_at,
-		leaseToken: row.lease_token,
-		leaseExpiresAt: row.lease_expires_at,
-		consecutiveFailures: row.consecutive_failures,
+		status: runtimeStatus(row),
+		nextPollAt: row.next_run_at,
+		queueToken: queued ? row.claim_token : null,
+		queuedAt: queued ? row.claimed_at : null,
+		queueExpiresAt: queued ? row.claim_expires_at : null,
+		leaseToken: running ? row.claim_token : null,
+		leaseExpiresAt: running ? row.claim_expires_at : null,
+		consecutiveFailures: row.failure_count,
 		lastAttemptAt: row.last_attempt_at,
 		lastSuccessAt: row.last_success_at,
 		lastErrorCode: row.last_error_code,
@@ -566,6 +550,16 @@ function mapState(row: SourceRuntimeStateRow): SourceRuntimeState {
 	};
 }
 
-function assertNonEmpty(value: string, name: string): void {
-	if (!value.trim()) throw new Error(`${name} must not be empty`);
+function readinessReason(
+	status: SourceRuntimeStatus,
+	row: RuntimeRow,
+	now: number,
+	staleAfterSeconds: number,
+): SourceReadinessIssue['reason'] | null {
+	if (status === 'blocked') return 'blocked';
+	if (status === 'dead') return 'dead';
+	if (row.last_success_at === null) {
+		return now - row.created_at > staleAfterSeconds ? 'never_succeeded' : null;
+	}
+	return now - row.last_success_at > staleAfterSeconds ? 'stale' : null;
 }

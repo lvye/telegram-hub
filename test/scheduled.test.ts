@@ -3,9 +3,9 @@ import { createScheduledController } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getConfig } from '../src/config';
 import type { CanonicalItem } from '../src/domain/ingestion';
-import { DeliveryRepositoryV2 } from '../src/persistence/delivery-repository-v2';
+import { DeliveryRepository } from '../src/persistence/delivery-repository';
 import worker, { CLEANUP_CRON, UPDATE_CRON } from '../src/worker';
-import { resetV2, seedDefaultV2Topology } from './v2-fixtures';
+import { resetDatabase, seedDefaultTopology } from './d1-fixtures';
 
 const ITEM: CanonicalItem = {
 	externalId: 'cleanup-item',
@@ -31,23 +31,19 @@ describe('scheduled handler', () => {
 			timestamp: '2026-07-11T00:00:00.000Z',
 		},
 		DB: env.DB,
-		DB_V2: env.DB_V2,
 		IT_HOME_CHAT_ID: 'test-it-home-chat',
-		NITTER_BASE_URL: 'https://nitter.net/',
 		TELEGRAM_BOT_TOKEN: 'test-token',
 		INGESTION_QUEUE: { sendBatch: sendIngestionBatch } as unknown as Queue,
 		TELEGRAM_DELIVERY_QUEUE: { sendBatch: sendDeliveryBatch } as unknown as Queue,
 		TWITTER_CHAT_ID: 'test-twitter-chat',
-		TWITTER_RSS_URL: 'https://example.com/twitter.xml',
-		TWITTER_SOURCE_PROVIDER: 'nitter',
 	};
 
 	beforeEach(async () => {
 		sendDeliveryBatch.mockClear();
 		sendIngestionBatch.mockClear();
-		await resetV2(env.DB_V2);
-		await seedDefaultV2Topology(
-			env.DB_V2,
+		await resetDatabase(env.DB);
+		await seedDefaultTopology(
+			env.DB,
 			getConfig(workerEnv),
 			Math.floor(Date.parse('2026-07-10T04:00:00Z') / 1_000),
 		);
@@ -65,7 +61,7 @@ describe('scheduled handler', () => {
 		expect(sendIngestionBatch.mock.calls[0][0]).toHaveLength(2);
 		expect(sendDeliveryBatch).not.toHaveBeenCalled();
 		expect(globalThis.fetch).not.toHaveBeenCalled();
-		const states = await env.DB_V2.prepare(`
+		const states = await env.DB.prepare(`
 			SELECT connectors.connector_key AS source_id,
 				state.state AS status, state.claim_token AS queue_token
 			FROM source_connector_state AS state
@@ -89,7 +85,7 @@ describe('scheduled handler', () => {
 		});
 
 		await expect(worker.scheduled(controller, workerEnv)).rejects.toThrow('queue unavailable');
-		const states = await env.DB_V2.prepare(`
+		const states = await env.DB.prepare(`
 			SELECT state.state AS status, state.claim_token AS queue_token
 			FROM source_connector_state AS state
 			JOIN source_connectors AS connectors ON connectors.id = state.connector_id
@@ -102,7 +98,7 @@ describe('scheduled handler', () => {
 	});
 
 	it('runs only compaction for the cleanup cron', async () => {
-		const repository = new DeliveryRepositoryV2(env.DB_V2);
+		const repository = new DeliveryRepository(env.DB);
 		await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [ITEM], 1_000);
 		const [{ deliveryId }] = await repository.listDispatchable(1_000);
 		await repository.acquireLease(deliveryId, 'cleanup-lease', 1_000);
@@ -117,7 +113,7 @@ describe('scheduled handler', () => {
 		expect(sendDeliveryBatch).not.toHaveBeenCalled();
 		expect(sendIngestionBatch).not.toHaveBeenCalled();
 		expect(globalThis.fetch).not.toHaveBeenCalled();
-		const item = await env.DB_V2.prepare(`
+		const item = await env.DB.prepare(`
 			SELECT description, image_url, metadata_json FROM content_items
 		`).first<{
 			description: string | null;

@@ -74,6 +74,19 @@ describe('formatTelegramMessage', () => {
 		].join('\n\n'));
 	});
 
+	it('preserves IT Home paragraph breaks when revalidating stored Telegram HTML', () => {
+		expect(formatTelegramMessage({
+			...DELIVERY,
+			title: '极狐阿尔法 T7 官图公布',
+			description: '第一段。\n\n第二段。\n\n第三段重点。',
+			formattedDescription: '第一段。\n\n第二段。\n\n第三段<b>重点</b>。',
+			link: null,
+		}, ARTICLE_DESTINATION)).toBe([
+			'<b>极狐阿尔法 T7 官图公布</b>',
+			'第一段。\n\n第二段。\n\n第三段<b>重点</b>。',
+		].join('\n\n'));
+	});
+
 	it('drops non-http links from untrusted feed data', () => {
 		expect(formatTelegramMessage({
 			...DELIVERY,

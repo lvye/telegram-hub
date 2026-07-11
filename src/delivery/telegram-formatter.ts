@@ -16,7 +16,10 @@ export function formatTelegramMessage(
 	return [
 		delivery.title ? `<b>${escapeHtml(delivery.title)}</b>` : '',
 		delivery.formattedDescription
-			? renderHtmlForTelegram(delivery.formattedDescription, { maxTextLength: 400 }).html
+			? renderHtmlForTelegram(delivery.formattedDescription, {
+				maxTextLength: 400,
+				preserveLineBreaks: true,
+			}).html
 			: delivery.description ? escapeHtml(delivery.description) : '',
 		formatLink(delivery.link, '阅读更多'),
 	].filter(Boolean).join('\n\n');

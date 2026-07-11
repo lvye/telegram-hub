@@ -570,20 +570,53 @@ export class DeliveryRepository {
 			aliases: itemAliases(candidate),
 		}));
 		const encodedPayload = JSON.stringify(payload);
-		const ambiguity = await this.db.prepare(`
-			SELECT COUNT(*) AS ambiguous_count
-			FROM (
-				SELECT candidate.key
-				FROM json_each(?) AS candidate
-				JOIN json_each(candidate.value, '$.aliases') AS candidate_alias
-				JOIN item_identity_aliases AS existing
-					ON existing.source_key = ?
-					AND existing.alias = CAST(candidate_alias.value AS TEXT)
-				WHERE candidate_alias.type = 'text'
-				GROUP BY candidate.key
-				HAVING COUNT(DISTINCT existing.item_id) > 1
-			)
-		`).bind(encodedPayload, sourceKey).first<AmbiguousCandidateRow>();
+		const [ambiguityResult, insertResult] = await this.db.batch([
+			this.db.prepare(`
+				SELECT COUNT(*) AS ambiguous_count
+				FROM (
+					SELECT candidate.key
+					FROM json_each(?) AS candidate
+					JOIN json_each(candidate.value, '$.aliases') AS candidate_alias
+					JOIN item_identity_aliases AS existing
+						ON existing.source_key = ?
+						AND existing.alias = CAST(candidate_alias.value AS TEXT)
+					WHERE candidate_alias.type = 'text'
+					GROUP BY candidate.key
+					HAVING COUNT(DISTINCT existing.item_id) > 1
+				)
+			`).bind(encodedPayload, sourceKey),
+			this.db.prepare(`
+				WITH resolved_candidates AS (
+					SELECT MIN(existing.item_id) AS item_id
+					FROM json_each(?) AS candidate
+					JOIN json_each(candidate.value, '$.aliases') AS candidate_alias
+					JOIN item_identity_aliases AS existing
+						ON existing.source_key = ?
+						AND existing.alias = CAST(candidate_alias.value AS TEXT)
+					WHERE candidate_alias.type = 'text'
+					GROUP BY candidate.key
+					HAVING COUNT(DISTINCT existing.item_id) = 1
+				)
+				INSERT OR IGNORE INTO deliveries (
+					item_id,
+					destination_key,
+					status,
+					available_at,
+					created_at,
+					updated_at
+				)
+				SELECT DISTINCT item_id, ?, 'ready', ?, ?, ?
+				FROM resolved_candidates
+			`).bind(
+				encodedPayload,
+				sourceKey,
+				destinationKey,
+				now,
+				now,
+				now,
+			),
+		]);
+		const ambiguity = ambiguityResult.results[0] as unknown as AmbiguousCandidateRow | undefined;
 		if ((ambiguity?.ambiguous_count ?? 0) > 0) {
 			throw new Error(
 				`Ambiguous item identity aliases for ${sourceKey}: `
@@ -591,38 +624,7 @@ export class DeliveryRepository {
 			);
 		}
 
-		const result = await this.db.prepare(`
-			WITH resolved_candidates AS (
-				SELECT MIN(existing.item_id) AS item_id
-				FROM json_each(?) AS candidate
-				JOIN json_each(candidate.value, '$.aliases') AS candidate_alias
-				JOIN item_identity_aliases AS existing
-					ON existing.source_key = ?
-					AND existing.alias = CAST(candidate_alias.value AS TEXT)
-				WHERE candidate_alias.type = 'text'
-				GROUP BY candidate.key
-				HAVING COUNT(DISTINCT existing.item_id) = 1
-			)
-			INSERT OR IGNORE INTO deliveries (
-				item_id,
-				destination_key,
-				status,
-				available_at,
-				created_at,
-				updated_at
-			)
-			SELECT DISTINCT item_id, ?, 'ready', ?, ?, ?
-			FROM resolved_candidates
-		`).bind(
-			encodedPayload,
-			sourceKey,
-			destinationKey,
-			now,
-			now,
-			now,
-		).run();
-
-		return result.meta.changes ?? 0;
+		return insertResult.meta.changes ?? 0;
 	}
 
 	async getOrCreateSourceProviderState(

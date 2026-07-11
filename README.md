@@ -107,7 +107,7 @@ Twitter 账号名单只维护在 D1 `twitter_subscriptions` 表中。`wrangler.t
 - `nitter`：逐账号请求 `${NITTER_BASE_URL}/{user_name}/rss`，当前用于和 API 结果对比；
 - `twitterapi-io`：恢复 TwitterAPI.io adapter、checkpoint 和分页逻辑。
 
-当前仓库配置为 `nitter`。切换不会改动订阅数据、API secret 或跨 provider identity；catalog 同步会暂停不再出现的旧 runtime sources。Nitter adapter 使用浏览器请求头，规范化状态链接为 `x.com`，并从 description HTML 提取图片。首次启用会按账号已有 tweet high-water 建立独立 checkpoint，避免重推整段历史。
+当前仓库配置为 `nitter`。切换不会改动订阅数据、API secret 或跨 provider identity；catalog 同步会暂停不再出现的旧 runtime sources。Nitter 的公开实例会阻断 Workers 常规 HTTP 出站，因此 adapter 对已配置的 HTTPS feed 使用受响应大小与超时限制的原生 TLS socket，并发送固定的只读 HTTP/1.1 GET。状态链接会规范化为 `x.com`，图片从 description HTML 提取。首次启用会按账号已有 tweet high-water 建立独立 checkpoint，避免重推整段历史。
 
 ### 可选：启用 TwitterAPI.io
 

@@ -9,6 +9,7 @@ import {
 	NITTER_USER_ADAPTER_KEY,
 	NitterUserSourceAdapter,
 } from '../src/ingestion/nitter-source-adapter';
+import { decodeNitterHttpResponse } from '../src/ingestion/nitter-tls-client';
 
 const CHECKPOINT: TwitterApiIoCheckpoint = {
 	highWaterExternalId: 'twitter:2075500000000000000',
@@ -49,7 +50,10 @@ describe('Nitter user timeline adapter', () => {
 			});
 		});
 		const checkpoints = checkpointStore();
-		const adapter = new NitterUserSourceAdapter(checkpoints);
+		const adapter = new NitterUserSourceAdapter(
+			checkpoints,
+			(input, init) => globalThis.fetch(input, init),
+		);
 
 		const batch = await adapter.load(SOURCE, {
 			options: OPTIONS,
@@ -93,6 +97,34 @@ describe('Nitter user timeline adapter', () => {
 			1_783_750_000,
 		);
 	});
+
+	it('decodes bounded content-length and chunked TLS HTTP responses', async () => {
+		const contentLength = encodedHttpResponse([
+			'HTTP/1.1 200 OK',
+			'Content-Type: application/rss+xml',
+			'Content-Length: 6',
+			'',
+			'<rss/>',
+		].join('\r\n'));
+		const chunked = encodedHttpResponse([
+			'HTTP/1.1 200 OK',
+			'Transfer-Encoding: chunked',
+			'',
+			'3',
+			'<rs',
+			'3',
+			's/>',
+			'0',
+			'',
+			'',
+		].join('\r\n'));
+
+		await expect(decodeNitterHttpResponse(contentLength, 100).text()).resolves.toBe('<rss/>');
+		await expect(decodeNitterHttpResponse(chunked, 100).text()).resolves.toBe('<rss/>');
+		expect(() => decodeNitterHttpResponse(contentLength, 5)).toThrow(
+			'Nitter TLS response exceeds 5 body bytes',
+		);
+	});
 });
 
 function checkpointStore(): TwitterApiIoCheckpointStore & {
@@ -102,6 +134,10 @@ function checkpointStore(): TwitterApiIoCheckpointStore & {
 		getOrCreate: vi.fn(async () => CHECKPOINT),
 		commit: vi.fn(async () => undefined),
 	};
+}
+
+function encodedHttpResponse(value: string): Uint8Array {
+	return new TextEncoder().encode(value);
 }
 
 const FEED = `<?xml version="1.0" encoding="UTF-8"?>

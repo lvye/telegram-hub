@@ -82,9 +82,11 @@ function workerEnv(): Env {
 		DB: env.DB,
 		INGESTION_QUEUE: env.INGESTION_QUEUE,
 		IT_HOME_CHAT_ID: 'test-it-home-chat',
+		NITTER_BASE_URL: 'https://nitter.net/',
 		TELEGRAM_BOT_TOKEN: 'test-token',
 		TELEGRAM_DELIVERY_QUEUE: env.TELEGRAM_DELIVERY_QUEUE,
 		TWITTER_CHAT_ID: 'test-twitter-chat',
 		TWITTER_RSS_URL: 'https://example.com/twitter.xml',
+		TWITTER_SOURCE_PROVIDER: 'nitter',
 	};
 }

@@ -37,10 +37,10 @@ Worker 仅保留只读的 `GET /health` 和 `GET /health/ready`。readiness 会�
 - `source_runtime_state` 保存 provider-neutral 的 cadence、租约、连续失败和下次轮询状态；`source_ingestion_state` 只保存 provider checkpoint
 - Cron 只按 `next_poll_at` 产生一个 source 一个 job；Ingestion Queue consumer 用 queue token 和 source lease 吸收重复或过期消息
 - 来源 429/5xx 同时遵守 `Retry-After`、指数退避和 jitter；永久 4xx 进入 `blocked`，原生 ingestion DLQ 耗尽后写入 `dead`，两者在不同冷却期后自动探测恢复
-- RSS 与 TwitterAPI.io adapter 都输出 provider-neutral `CanonicalItem`，统一 ingestion service 负责去重、入库和 checkpoint 提交
+- RSS、Nitter 与 TwitterAPI.io adapter 都输出 provider-neutral `CanonicalItem`，统一 ingestion service 负责去重、入库和 checkpoint 提交
 - Telegram chat、parse mode 和 message format 属于独立 destination 配置，不再混入抓取 source
 - 使用 `(source_key, external_id)` 去重，不依赖发布时间水位
-- TwitterAPI.io 与旧 RSS 共用 `TWITTER` identity alias；RSS 保留原 GUID，tweet status ID 负责跨 provider 去重
+- Nitter、TwitterAPI.io 与旧 RSS 共用 `TWITTER` identity alias；RSS 保留原 GUID，tweet status ID 负责跨 provider 去重
 - 最新已知 RSS tweet identity 作为切换 high-water，避免墙钟 cutover 漏推；订阅表中的账号独立失败，不会重复抓取同一个 RSS fallback
 - TwitterAPI.io 的 cursor、pending high-water 与 committed high-water 持久化到 D1；单轮达到 page budget 后下轮续拉
 - 扫描整个受 2 MB 上限保护的 Feed，每轮只写入最早的 50 个未见 identity；重复 Feed 对 `items/deliveries` 零写入，窗口外延迟文章会在后续轮次补入
@@ -98,7 +98,16 @@ npx wrangler secret put TWITTER_CHAT_ID
 npx wrangler secret put TWITTER_RSS_URL
 ```
 
-上述四个基础 binding 通过 `[secrets].required` 声明；缺失时部署会失败，而不是在 Cron 深层才报错。TwitterAPI.io binding 是可选的，便于先安全部署代码与 migration，再原子启用 provider。
+上述四个基础 binding 通过 `[secrets].required` 声明；缺失时部署会失败，而不是在 Cron 深层才报错。TwitterAPI.io binding 是可选的，便于保留凭据但通过 provider 开关暂停调用。
+
+### Twitter provider 切换
+
+Twitter 账号名单只维护在 D1 `twitter_subscriptions` 表中。`wrangler.toml` 的非敏感变量 `TWITTER_SOURCE_PROVIDER` 决定所有 `active` 账号使用哪个 provider：
+
+- `nitter`：逐账号请求 `${NITTER_BASE_URL}/{user_name}/rss`，当前用于和 API 结果对比；
+- `twitterapi-io`：恢复 TwitterAPI.io adapter、checkpoint 和分页逻辑。
+
+当前仓库配置为 `nitter`。切换不会改动订阅数据、API secret 或跨 provider identity；catalog 同步会暂停不再出现的旧 runtime sources。Nitter adapter 使用浏览器请求头，规范化状态链接为 `x.com`，并从 description HTML 提取图片。首次启用会按账号已有 tweet high-water 建立独立 checkpoint，避免重推整段历史。
 
 ### 可选：启用 TwitterAPI.io
 
@@ -110,7 +119,7 @@ npx wrangler secret put TWITTERAPI_IO_API_KEY
 
 应用 migration 后，通过 Cloudflare Dashboard 或一次性的 `wrangler d1 execute --remote --command` 写入账号。不要把真实账号 INSERT 放进 migration、seed SQL 或其他 Git 跟踪文件。每行包含稳定的 `provider_state_key`、不带 `@` 的 `user_name`、`active/paused/archived` 状态和独立轮询参数；暂停账号不会删除其 cursor/high-water。
 
-表为空时保留单次 RSS 行为；表存在订阅行时，由 `active` 行展开 API sources，多个账号仍共享 `TWITTER` item identity 和 Telegram destination。旧的 `TWITTERAPI_IO_USER_ID` / `TWITTERAPI_IO_USER_NAME` 单账号 binding 仍兼容，但不再是推荐配置。
+表为空时保留单次 RSS 行为；表存在订阅行时，由 `active` 行按当前 provider 展开 sources，多个账号仍共享 `TWITTER` item identity 和 Telegram destination。旧的 `TWITTERAPI_IO_USER_ID` / `TWITTERAPI_IO_USER_NAME` 单账号 binding 仍兼容，但不再是推荐配置。
 
 可选调节项如下，默认每 5 分钟调用一次、每次 invocation 最多 1 页（每页最多 20 条）、不包含 replies：
 
@@ -122,9 +131,9 @@ npx wrangler secret put TWITTERAPI_IO_INCLUDE_REPLIES
 
 `0004` migration 会从历史 Twitter URL 回填 tweet status ID alias。`0005` 只创建订阅表结构，不包含任何账号数据。每个订阅使用独立、稳定的 provider state；首次启用只按该账号的历史 URL 初始化 high-water，避免错误引用其他账号的最新 tweet。若单次达到 page budget，下一次到期 Cron 会从 D1 中保存的 cursor 续拉。
 
-当前官方响应没有稳定公开的媒体字段合约，因此 API provider 先发送正文与原文链接，RSS fallback 仍保留原有图片解析。该 endpoint 官方不建议高频轮询，调整 cadence/page budget 前请先评估调用成本。[接口文档](https://docs.twitterapi.io/api-reference/endpoint/get_user_last_tweets)
+TwitterAPI.io adapter 兼容常见媒体字段，并在必要时从明确的 tweet photo 页面读取 Open Graph 图片。该 endpoint 官方不建议高频轮询，调整 cadence/page budget 前请先评估调用成本。[接口文档](https://docs.twitterapi.io/api-reference/endpoint/get_user_last_tweets)
 
-注意：一旦 TwitterAPI.io 已成功投递新 tweet，就不能再安全回滚到只理解 RSS provider GUID 的旧 Worker；此后应采用 roll-forward。订阅表为空时保持原 RSS 行为；存在 `active` 行但缺少 API key 时会显式报配置错误。
+注意：一旦 TwitterAPI.io 已成功投递新 tweet，就不能再安全回滚到只理解 RSS provider GUID 的旧 Worker；此后应采用 roll-forward。订阅表为空时保持原 RSS 行为；选择 `twitterapi-io` 且存在 `active` 行但缺少 API key 时会显式报配置错误。选择 `nitter` 时不会读取或调用 TwitterAPI.io。
 
 ### 4. 应用数据库迁移
 

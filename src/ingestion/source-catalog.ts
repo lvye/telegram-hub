@@ -1,5 +1,6 @@
 import type {
 	AppConfig,
+	NitterUserAdapterConfig,
 	RssSourceAdapterConfig,
 	SourceConfig,
 	TwitterApiIoSourceConfig,
@@ -11,6 +12,7 @@ import {
 	type TwitterSubscription,
 } from '../persistence/twitter-subscription-repository';
 import { RSS_SOURCE_ADAPTER_KEY } from './rss-source-adapter';
+import { NITTER_USER_ADAPTER_KEY } from './nitter-source-adapter';
 import {
 	TWITTER_API_IO_USER_ADAPTER_KEY,
 	twitterApiStateKey,
@@ -39,14 +41,23 @@ export class D1SourceCatalog implements SourceCatalog {
 		if (activeSubscriptions.length === 0) {
 			return nonTwitterSources.map(sourceDefinition);
 		}
-		if (!this.config.twitterApiIo.apiKey) {
-			throw new Error('Active Twitter subscriptions require TWITTERAPI_IO_API_KEY');
-		}
-
 		const routingSource = this.config.sources.find((source) => (
 			source.sourceKey === TWITTER_IDENTITY_NAMESPACE
 		));
 		if (!routingSource) throw new Error('Twitter subscriptions require a Twitter source route');
+		if (this.config.twitterSourceProvider === 'nitter') {
+			return [
+				...nonTwitterSources.map(sourceDefinition),
+				...activeSubscriptions.map((subscription) => nitterSubscriptionSource(
+					subscription,
+					this.config,
+					routingSource.destinationKey,
+				)),
+			];
+		}
+		if (!this.config.twitterApiIo.apiKey) {
+			throw new Error('Active Twitter subscriptions require TWITTERAPI_IO_API_KEY');
+		}
 
 		return [
 			...nonTwitterSources.map(sourceDefinition),
@@ -55,6 +66,34 @@ export class D1SourceCatalog implements SourceCatalog {
 			)),
 		];
 	}
+}
+
+function nitterSubscriptionSource(
+	subscription: TwitterSubscription,
+	config: AppConfig,
+	destinationKey: string,
+): SourceDefinition<NitterUserAdapterConfig> {
+	const sourceId = `nitter:subscription:${subscription.id}`;
+	return {
+		sourceId,
+		adapterKey: NITTER_USER_ADAPTER_KEY,
+		identityNamespace: TWITTER_IDENTITY_NAMESPACE,
+		destinationKey,
+		pollEveryMinutes: subscription.pollEveryMinutes,
+		config: {
+			feedUrl: nitterFeedUrl(config.nitter.baseUrl, subscription.userName),
+			userName: subscription.userName,
+			includeReplies: subscription.includeReplies,
+			providerStateKey: sourceId,
+			initializationAt: subscription.createdAt,
+		},
+	};
+}
+
+function nitterFeedUrl(baseUrl: string, userName: string): string {
+	const base = new URL(baseUrl);
+	if (!base.pathname.endsWith('/')) base.pathname += '/';
+	return new URL(`${encodeURIComponent(userName)}/rss`, base).toString();
 }
 
 function sourceDefinition(source: SourceConfig): SourceDefinition {

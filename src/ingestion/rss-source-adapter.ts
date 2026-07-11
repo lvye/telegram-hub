@@ -13,6 +13,10 @@ import { parseRetryAfter, SourceHttpError } from './source-http-error';
 
 export const RSS_SOURCE_ADAPTER_KEY = 'rss';
 
+export interface RssLoadRequestOptions {
+	headers?: HeadersInit;
+}
+
 export class RssSourceAdapter implements SourceAdapter<RssSourceAdapterConfig> {
 	readonly key = RSS_SOURCE_ADAPTER_KEY;
 
@@ -62,11 +66,12 @@ export async function loadRssCanonicalItems(
 	config: RssSourceAdapterConfig,
 	identityNamespace: string,
 	options: IngestionOptions,
+	requestOptions: RssLoadRequestOptions = {},
 ): Promise<CanonicalItem[]> {
+	const headers = new Headers(requestOptions.headers);
+	headers.set('accept', 'application/atom+xml, application/rss+xml, application/xml, text/xml');
 	const response = await fetch(config.url, {
-		headers: {
-			accept: 'application/atom+xml, application/rss+xml, application/xml, text/xml',
-		},
+		headers,
 		signal: AbortSignal.timeout(options.feedTimeoutMs),
 	});
 

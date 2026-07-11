@@ -82,6 +82,49 @@ describe('D1SourceCatalog', () => {
 		]);
 	});
 
+	it('uses the same active subscriptions for Nitter without calling TwitterAPI.io', async () => {
+		await env.DB.batch([
+			subscription('twitterapi-io:subscription:alpha', 'AlphaAccount', 'active', 1, 3, 1),
+			subscription('twitterapi-io:subscription:beta', 'BetaAccount', 'active', 5, 2, 0),
+			subscription('twitterapi-io:subscription:paused', 'PausedAccount', 'paused', 5, 1, 0),
+		]);
+		const config = getConfig({
+			...BASE_ENV,
+			TWITTER_SOURCE_PROVIDER: 'nitter',
+			NITTER_BASE_URL: 'https://nitter.net/',
+		} as Env);
+
+		const sources = await new D1SourceCatalog(env.DB, config).list();
+
+		expect(sources.map(({ sourceId }) => sourceId)).toEqual([
+			'rss:it_home',
+			'nitter:subscription:1',
+			'nitter:subscription:2',
+		]);
+		expect(sources.slice(1)).toMatchObject([
+			{
+				adapterKey: 'nitter.user-timeline',
+				identityNamespace: 'TWITTER',
+				destinationKey: 'telegram:TWITTER',
+				pollEveryMinutes: 1,
+				config: {
+					feedUrl: 'https://nitter.net/AlphaAccount/rss',
+					userName: 'AlphaAccount',
+					includeReplies: true,
+				},
+			},
+			{
+				adapterKey: 'nitter.user-timeline',
+				pollEveryMinutes: 5,
+				config: {
+					feedUrl: 'https://nitter.net/BetaAccount/rss',
+					userName: 'BetaAccount',
+					includeReplies: false,
+				},
+			},
+		]);
+	});
+
 	it('rejects active subscriptions without provider credentials', async () => {
 		await env.DB.batch([
 			subscription('state:active', 'ActiveAccount', 'active', 5, 1, 0),

@@ -5,10 +5,12 @@ export const DELIVERY_DLQ_NAME = 'telegram-delivery-dlq';
 export const INGESTION_QUEUE_NAME = 'source-ingestion';
 export const INGESTION_DLQ_NAME = 'source-ingestion-dlq';
 export const TWITTERAPI_IO_ENDPOINT = 'https://api.twitterapi.io/twitter/user/last_tweets';
+export const NITTER_BASE_URL = 'https://nitter.net/';
 
 export type TelegramParseMode = 'HTML';
 export type MessageFormat = 'article' | 'twitter';
 export type IdentityStrategy = 'external-id' | 'twitter-status-url';
+export type TwitterSourceProvider = 'nitter' | 'twitterapi-io';
 
 interface SourceConfigBase {
 	sourceKey: string;
@@ -63,11 +65,23 @@ export type TwitterApiIoUserAdapterConfig = Pick<
 	| 'userName'
 >;
 
+export interface NitterUserAdapterConfig {
+	feedUrl: string;
+	userName: string;
+	includeReplies: boolean;
+	providerStateKey: string;
+	initializationAt: number;
+}
+
 export type SourceConfig = RssSourceConfig | TwitterApiIoSourceConfig;
 
 export interface AppConfig {
 	sources: SourceConfig[];
 	destinations: DeliveryDestinationConfig[];
+	twitterSourceProvider: TwitterSourceProvider;
+	nitter: {
+		baseUrl: string;
+	};
 	twitterApiIo: {
 		apiKey: string | null;
 		endpoint: string;
@@ -103,12 +117,12 @@ export function getConfig(env: Env): AppConfig {
 	const itHomeChatId = requiredBinding(env.IT_HOME_CHAT_ID, 'IT_HOME_CHAT_ID');
 	const twitterChatId = requiredBinding(env.TWITTER_CHAT_ID, 'TWITTER_CHAT_ID');
 	const twitterRssUrl = requiredUrl(env.TWITTER_RSS_URL, 'TWITTER_RSS_URL');
+	const twitterSourceProvider = configuredTwitterSourceProvider(env);
+	const nitter = nitterRuntime(env);
 	const twitterApiIo = twitterApiIoRuntime(env);
-	const twitterApiSource = optionalTwitterApiIoSource(
-		env,
-		twitterRssUrl,
-		twitterApiIo,
-	);
+	const twitterApiSource = twitterSourceProvider === 'twitterapi-io'
+		? optionalTwitterApiIoSource(env, twitterRssUrl, twitterApiIo)
+		: null;
 
 	return {
 		sources: [
@@ -145,6 +159,8 @@ export function getConfig(env: Env): AppConfig {
 				messageFormat: 'twitter',
 			},
 		],
+		twitterSourceProvider,
+		nitter,
 		twitterApiIo,
 		ingestion: {
 			feedTimeoutMs: 15_000,
@@ -172,6 +188,8 @@ export function getConfig(env: Env): AppConfig {
 }
 
 type OptionalTwitterApiBindings = {
+	NITTER_BASE_URL?: string;
+	TWITTER_SOURCE_PROVIDER?: string;
 	TWITTERAPI_IO_API_KEY?: string;
 	TWITTERAPI_IO_INCLUDE_REPLIES?: string;
 	TWITTERAPI_IO_MAX_PAGES?: string;
@@ -179,6 +197,23 @@ type OptionalTwitterApiBindings = {
 	TWITTERAPI_IO_USER_ID?: string;
 	TWITTERAPI_IO_USER_NAME?: string;
 };
+
+function configuredTwitterSourceProvider(env: Env): TwitterSourceProvider {
+	const value = optionalBinding((env as Env & OptionalTwitterApiBindings).TWITTER_SOURCE_PROVIDER)
+		?? 'twitterapi-io';
+	if (value === 'nitter' || value === 'twitterapi-io') return value;
+	throw new Error('TWITTER_SOURCE_PROVIDER must be nitter or twitterapi-io');
+}
+
+function nitterRuntime(env: Env): AppConfig['nitter'] {
+	const raw = optionalBinding((env as Env & OptionalTwitterApiBindings).NITTER_BASE_URL)
+		?? NITTER_BASE_URL;
+	try {
+		return { baseUrl: new URL(raw).toString() };
+	} catch {
+		throw new Error('NITTER_BASE_URL must be a valid URL');
+	}
+}
 
 function optionalTwitterApiIoSource(
 	env: Env,

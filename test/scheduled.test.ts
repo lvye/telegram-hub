@@ -30,11 +30,13 @@ describe('scheduled handler', () => {
 		},
 		DB: env.DB,
 		IT_HOME_CHAT_ID: 'test-it-home-chat',
+		NITTER_BASE_URL: 'https://nitter.net/',
 		TELEGRAM_BOT_TOKEN: 'test-token',
 		INGESTION_QUEUE: { sendBatch: sendIngestionBatch } as unknown as Queue,
 		TELEGRAM_DELIVERY_QUEUE: { sendBatch: sendDeliveryBatch } as unknown as Queue,
 		TWITTER_CHAT_ID: 'test-twitter-chat',
 		TWITTER_RSS_URL: 'https://example.com/twitter.xml',
+		TWITTER_SOURCE_PROVIDER: 'nitter',
 	};
 
 	beforeEach(async () => {

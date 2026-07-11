@@ -4,7 +4,9 @@ declare global {
   namespace Cloudflare {
     interface Env {
       MIGRATION_DB: D1Database;
+      SCHEMA_V2_DB: D1Database;
       TEST_MIGRATIONS: D1Migration[];
+      TEST_V2_MIGRATIONS: D1Migration[];
     }
   }
 }

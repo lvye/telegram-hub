@@ -55,6 +55,7 @@ src/
 └── utils/
 
 migrations/   # single source of truth for the D1 schema
+migrations_v2/ # normalized next-generation schema under validation
 test/         # workerd integration tests
 ```
 
@@ -107,7 +108,7 @@ Once TwitterAPI.io has successfully delivered a new tweet, do not roll back to a
 Apply migrations before deploying the Worker:
 
 ```bash
-npx wrangler d1 migrations apply rss --remote
+npm run db:migrate:remote
 npm run check
 npm run deploy
 ```
@@ -124,7 +125,7 @@ Rollback is viable for the existing source set while the legacy assumption of gl
 
 ```bash
 cp .dev.vars.example .dev.vars
-npm run types
+npm run cf:types:generate
 npm test
 npm run dev
 ```
@@ -139,8 +140,13 @@ curl "http://localhost:8787/cdn-cgi/handler/scheduled?cron=0+4+*+*+*&format=json
 Useful checks:
 
 ```bash
-npm run typecheck
+npm run cf:types:check
+npm run ts:check
 npm test
+npm run db:schema:v2:check
+npm run db:migrate:local
+npm run db:migrations:list:remote
+npm run db:migrate:remote
 npm run deploy:dry
 npm run check
 ```

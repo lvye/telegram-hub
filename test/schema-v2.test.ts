@@ -1,0 +1,134 @@
+import { env } from 'cloudflare:workers';
+import { applyD1Migrations } from 'cloudflare:test';
+import { expect, it } from 'vitest';
+
+await applyD1Migrations(env.SCHEMA_V2_DB, env.TEST_V2_MIGRATIONS);
+
+const EXPECTED_TABLES = [
+	'content_items',
+	'destinations',
+	'item_identities',
+	'item_observations',
+	'message_deliveries',
+	'source_connector_checkpoints',
+	'source_connector_state',
+	'source_connectors',
+	'source_routes',
+	'sources',
+];
+
+it('creates the normalized v2 schema with enforced identities and state invariants', async () => {
+	const tables = await env.SCHEMA_V2_DB.prepare(`
+		SELECT name
+		FROM sqlite_schema
+		WHERE type = 'table'
+			AND name NOT LIKE '_cf_%'
+			AND name NOT LIKE 'sqlite_%'
+			AND name <> 'd1_migrations'
+		ORDER BY name
+	`).all<{ name: string }>();
+	expect(tables.results.map(({ name }) => name)).toEqual(EXPECTED_TABLES);
+
+	const now = 1_783_760_000;
+	await env.SCHEMA_V2_DB.batch([
+		env.SCHEMA_V2_DB.prepare(`
+			INSERT INTO sources (
+				id, source_key, source_type, identity_namespace, display_name,
+				settings_json, created_at, updated_at
+			) VALUES (1, 'twitter:user:macromargin', 'twitter_user', 'twitter:status',
+				'MacroMargin', '{"include_replies":false}', ?, ?)
+		`).bind(now, now),
+		env.SCHEMA_V2_DB.prepare(`
+			INSERT INTO source_connectors (
+				id, source_id, connector_key, provider_key, adapter_key,
+				poll_interval_seconds, config_json, created_at, updated_at
+			) VALUES (1, 1, 'twitter:user:macromargin@nitter', 'nitter',
+				'nitter.user_timeline', 300, '{"base_url":"https://nitter.net/"}', ?, ?)
+		`).bind(now, now),
+		env.SCHEMA_V2_DB.prepare(`
+			INSERT INTO destinations (
+				id, destination_key, provider_key, adapter_key, config_json,
+				secret_ref, created_at, updated_at
+			) VALUES (1, 'telegram:twitter', 'telegram', 'telegram.bot', '{}',
+				'TWITTER_CHAT_ID', ?, ?)
+		`).bind(now, now),
+		env.SCHEMA_V2_DB.prepare(`
+			INSERT INTO source_routes (source_id, destination_id, created_at, updated_at)
+			VALUES (1, 1, ?, ?)
+		`).bind(now, now),
+		env.SCHEMA_V2_DB.prepare(`
+			INSERT INTO content_items (
+				id, identity_namespace, canonical_id, title, url, published_at,
+				created_at, updated_at
+			) VALUES (1, 'twitter:status', 'twitter:123', 'Tweet',
+				'https://x.com/MacroMargin/status/123', ?, ?, ?)
+		`).bind(now, now, now),
+	]);
+
+	await env.SCHEMA_V2_DB.batch([
+		env.SCHEMA_V2_DB.prepare(`
+			INSERT INTO source_connector_state (
+				connector_id, state, next_run_at, created_at, updated_at
+			) VALUES (1, 'idle', ?, ?, ?)
+		`).bind(now, now, now),
+		env.SCHEMA_V2_DB.prepare(`
+			INSERT INTO source_connector_checkpoints (
+				connector_id, initialized_at, high_water_identity, updated_at
+			) VALUES (1, ?, 'twitter:123', ?)
+		`).bind(now, now),
+		env.SCHEMA_V2_DB.prepare(`
+			INSERT INTO item_identities (
+				identity_namespace, identity_value, item_id, identity_kind, created_at
+			) VALUES ('twitter:status', 'twitter:123', 1, 'canonical', ?)
+		`).bind(now),
+		env.SCHEMA_V2_DB.prepare(`
+			INSERT INTO item_observations (
+				connector_id, item_id, provider_item_id, first_observed_at, last_observed_at
+			) VALUES (1, 1, '123', ?, ?)
+		`).bind(now, now),
+		env.SCHEMA_V2_DB.prepare(`
+			INSERT INTO message_deliveries (
+				id, item_id, destination_id, trigger_source_id, state,
+				next_attempt_at, created_at, updated_at
+			) VALUES (1, 1, 1, 1, 'pending', ?, ?, ?)
+		`).bind(now, now, now),
+	]);
+
+	await expect(env.SCHEMA_V2_DB.prepare(`
+		INSERT INTO item_identities (
+			identity_namespace, identity_value, item_id, identity_kind, created_at
+		) VALUES ('twitter:status', 'twitter:123', 1, 'provider_id', ?)
+	`).bind(now).run()).rejects.toThrow();
+
+	await expect(env.SCHEMA_V2_DB.prepare(`
+		UPDATE source_connector_state
+		SET state = 'queued', updated_at = ?
+		WHERE connector_id = 1
+	`).bind(now).run()).rejects.toThrow();
+});
+
+it('uses partial indexes for due connectors and dispatchable deliveries without sorting', async () => {
+	const connectorPlan = await env.SCHEMA_V2_DB.prepare(`
+		EXPLAIN QUERY PLAN
+		SELECT connector_id
+		FROM source_connector_state
+		WHERE state = 'idle' AND next_run_at <= ?
+		ORDER BY next_run_at, connector_id
+		LIMIT 100
+	`).bind(1_783_760_000).all<{ detail: string }>();
+	const connectorDetails = connectorPlan.results.map(({ detail }) => detail);
+	expect(connectorDetails.some((detail) => detail.includes('idx_source_connector_state_due'))).toBe(true);
+	expect(connectorDetails.every((detail) => !detail.includes('TEMP B-TREE'))).toBe(true);
+
+	const deliveryPlan = await env.SCHEMA_V2_DB.prepare(`
+		EXPLAIN QUERY PLAN
+		SELECT id
+		FROM message_deliveries
+		WHERE state = 'pending' AND next_attempt_at <= ?
+		ORDER BY next_attempt_at, id
+		LIMIT 100
+	`).bind(1_783_760_000).all<{ detail: string }>();
+	const deliveryDetails = deliveryPlan.results.map(({ detail }) => detail);
+	expect(deliveryDetails.some((detail) => detail.includes('idx_message_deliveries_dispatch'))).toBe(true);
+	expect(deliveryDetails.every((detail) => !detail.includes('TEMP B-TREE'))).toBe(true);
+});

@@ -4,17 +4,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "npm run types:check && npm run typecheck && npm run test && npm run test:smoke && npm run deploy:dry",
+    "cf:types:generate": "wrangler types",
+    "cf:types:check": "wrangler types --check",
+    "check": "npm run cf:types:check && npm run ts:check && npm test && npm run test:smoke && npm run deploy:dry",
+    "db:migrations:list:local": "wrangler d1 migrations list rss --local",
+    "db:migrations:list:remote": "wrangler d1 migrations list rss --remote",
+    "db:migrate:local": "wrangler d1 migrations apply rss --local",
+    "db:migrate:remote": "wrangler d1 migrations apply rss --remote",
+    "db:schema:v2:check": "vitest run test/schema-v2.test.ts",
     "deploy": "wrangler deploy",
     "deploy:dry": "wrangler deploy --dry-run --outdir .wrangler/check",
     "dev": "wrangler dev",
-    "start": "wrangler dev",
     "test": "vitest run",
     "test:smoke": "node --test scripts/smoke-health.node.mjs",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
-    "types": "wrangler types",
-    "types:check": "wrangler types --check"
+    "ts:check": "tsc --noEmit"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.4",

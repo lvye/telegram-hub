@@ -2,6 +2,7 @@ import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-worker
 import { defineConfig } from 'vitest/config';
 
 const migrations = await readD1Migrations('./migrations');
+const v2Migrations = await readD1Migrations('./migrations_v2');
 
 export default defineConfig({
   plugins: [
@@ -12,6 +13,7 @@ export default defineConfig({
         d1Databases: {
           DB: '00000000-0000-0000-0000-000000000001',
           MIGRATION_DB: '00000000-0000-0000-0000-000000000002',
+          SCHEMA_V2_DB: '00000000-0000-0000-0000-000000000003',
         },
         queueProducers: {
           INGESTION_QUEUE: 'source-ingestion',
@@ -45,6 +47,7 @@ export default defineConfig({
           IT_HOME_CHAT_ID: 'test-it-home-chat',
           TELEGRAM_BOT_TOKEN: 'test-telegram-token',
           TEST_MIGRATIONS: migrations,
+          TEST_V2_MIGRATIONS: v2Migrations,
           TWITTER_CHAT_ID: 'test-twitter-chat',
           TWITTER_RSS_URL: 'https://example.com/twitter.xml',
         },

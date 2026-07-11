@@ -66,6 +66,7 @@ src/
 └── utils/                       # 文本与 XML 工具
 
 migrations/                      # D1 schema 的唯一事实来源
+migrations_v2/                   # 下一代规范化 schema（切换前独立验证）
 test/                            # workerd 集成测试
 ```
 
@@ -138,7 +139,7 @@ TwitterAPI.io adapter 兼容常见媒体字段，并在必要时从明确的 twe
 ### 4. 应用数据库迁移
 
 ```bash
-npx wrangler d1 migrations apply rss --remote
+npm run db:migrate:remote
 ```
 
 `0003` 会从旧的 `pushed_items` 回填新模型：
@@ -166,7 +167,7 @@ npm run deploy
 
 ```bash
 cp .dev.vars.example .dev.vars
-npm run types
+npm run cf:types:generate
 npm test
 npm run dev
 ```
@@ -181,10 +182,15 @@ curl "http://localhost:8787/cdn-cgi/handler/scheduled?cron=0+4+*+*+*&format=json
 常用命令：
 
 ```bash
-npm run typecheck     # TypeScript
-npm test              # workerd tests
-npm run deploy:dry    # bundle + Workers 校验
-npm run check         # types + typecheck + tests + dry-run
+npm run cf:types:check            # Cloudflare binding 类型
+npm run ts:check                  # TypeScript
+npm test                          # workerd tests
+npm run db:schema:v2:check        # v2 schema、约束与索引计划
+npm run db:migrate:local          # 当前数据库本地 migration
+npm run db:migrations:list:remote # 当前数据库远端 migration 状态
+npm run db:migrate:remote         # 当前数据库远端 migration（CI 使用）
+npm run deploy:dry                # bundle + Workers 校验
+npm run check                     # 完整检查
 ```
 
 ## 添加数据源

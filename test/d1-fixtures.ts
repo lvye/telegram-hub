@@ -2,7 +2,7 @@ import type { AppConfig } from '../src/config';
 import { normalizeDestinationKey } from '../src/config';
 import { RSS_SOURCE_ADAPTER_KEY } from '../src/ingestion/rss-source-adapter';
 
-export async function resetV2(db: D1Database): Promise<void> {
+export async function resetDatabase(db: D1Database): Promise<void> {
 	await db.batch([
 		db.prepare('DELETE FROM message_deliveries'),
 		db.prepare('DELETE FROM item_observations'),
@@ -14,16 +14,14 @@ export async function resetV2(db: D1Database): Promise<void> {
 		db.prepare('DELETE FROM source_connectors'),
 		db.prepare('DELETE FROM destinations'),
 		db.prepare('DELETE FROM sources'),
-		db.prepare('DELETE FROM schema_mirror_cursors'),
 	]);
 }
 
-export async function seedDefaultV2Topology(
+export async function seedDefaultTopology(
 	db: D1Database,
 	config: AppConfig,
 	now: number,
 ): Promise<void> {
-	const rssSources = config.sources.filter((source) => source.type === 'rss');
 	for (const destination of config.destinations) {
 		await db.prepare(`
 			INSERT INTO destinations (
@@ -33,17 +31,14 @@ export async function seedDefaultV2Topology(
 		`).bind(normalizeDestinationKey(destination.destinationKey), now, now).run();
 	}
 
-	for (const source of rssSources) {
+	for (const source of DEFAULT_RSS_SOURCES) {
 		const sourceKey = `rss:${slug(source.sourceKey)}`;
-		const identityNamespace = source.sourceKey === 'TWITTER'
-			? 'twitter:status'
-			: `rss:${slug(source.sourceKey)}`;
 		await db.prepare(`
 			INSERT INTO sources (
 				source_key, source_type, identity_namespace, display_name,
 				status, settings_json, created_at, updated_at
 			) VALUES (?, 'rss_feed', ?, ?, 'active', '{}', ?, ?)
-		`).bind(sourceKey, identityNamespace, source.sourceKey, now, now).run();
+		`).bind(sourceKey, source.identityNamespace, source.sourceKey, now, now).run();
 		await db.prepare(`
 			INSERT INTO source_connectors (
 				source_id, connector_key, provider_key, adapter_key, status,
@@ -78,7 +73,28 @@ export async function seedDefaultV2Topology(
 	}
 }
 
-export async function seedV2Destination(
+const DEFAULT_RSS_SOURCES = [
+	{
+		sourceKey: 'IT_HOME',
+		identityNamespace: 'rss:it-home',
+		destinationKey: 'telegram:IT_HOME',
+		pollEveryMinutes: 1,
+		url: 'https://www.ithome.com/rss/',
+		parser: 'it-home',
+		identityStrategy: 'external-id',
+	},
+	{
+		sourceKey: 'TWITTER',
+		identityNamespace: 'twitter:status',
+		destinationKey: 'telegram:TWITTER',
+		pollEveryMinutes: 1,
+		url: 'https://example.com/twitter.xml',
+		parser: 'twitter',
+		identityStrategy: 'twitter-status-url',
+	},
+] as const;
+
+export async function seedDestination(
 	db: D1Database,
 	destinationKey: string,
 	now: number,

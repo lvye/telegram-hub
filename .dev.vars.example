@@ -1,20 +1,8 @@
-# Cloudflare Workers 本地开发环境变量
-# 此模板会提交到仓库；复制为被忽略的 .dev.vars 后再填入真实值
+# Copy to .dev.vars and replace placeholders with local credentials.
 
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 IT_HOME_CHAT_ID=your-it-home-chat-id
 TWITTER_CHAT_ID=your-twitter-chat-id
-TWITTER_RSS_URL=https://rss.app/feeds/your-feed.xml
 
-# 非敏感 provider 开关；与 wrangler.toml 保持一致。
-TWITTER_SOURCE_PROVIDER=nitter
-NITTER_BASE_URL=https://nitter.net/
-
-# 可选：切回 twitterapi-io 时使用；账号仍从 D1 twitter_subscriptions 表加载。
-# USER_ID/USER_NAME 仅用于兼容旧的单账号配置。
-# TWITTERAPI_IO_USER_ID=your-twitter-user-id
-# TWITTERAPI_IO_USER_NAME=your-twitter-screen-name
+# Optional: required only by an active twitterapi-io.user-timeline connector.
 # TWITTERAPI_IO_API_KEY=your-twitterapi-io-api-key
-# TWITTERAPI_IO_POLL_MINUTES=5
-# TWITTERAPI_IO_MAX_PAGES=1
-# TWITTERAPI_IO_INCLUDE_REPLIES=false

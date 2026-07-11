@@ -1,0 +1,127 @@
+import { env } from 'cloudflare:workers';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getConfig } from '../src/config';
+import type {
+	CanonicalItem,
+	IngestionBatch,
+	SourceAdapter,
+	SourceDefinition,
+} from '../src/domain/ingestion';
+import { IngestionService } from '../src/ingestion/ingestion-service';
+import { SourceAdapterRegistry } from '../src/ingestion/source-adapter-registry';
+import { DeliveryRepository } from '../src/persistence/delivery-repository';
+import { resetDatabase, seedDefaultTopology } from './d1-fixtures';
+
+const NOW = 1_783_760_000;
+const SOURCE: SourceDefinition = {
+	sourceId: 'rss:it_home',
+	adapterKey: 'fake',
+	identityNamespace: 'rss:it-home',
+	destinationKey: 'telegram:IT_HOME',
+	pollEveryMinutes: 1,
+	config: {},
+};
+const OPTIONS = getConfig(env).ingestion;
+
+describe('IngestionService', () => {
+	const repository = new DeliveryRepository(env.DB);
+
+	beforeEach(async () => {
+		await resetDatabase(env.DB);
+		await seedDefaultTopology(env.DB, getConfig(env), NOW);
+	});
+
+	it('drains unseen items across bounded ingestion windows', async () => {
+		const service = serviceFor({
+			items: [item('newest', 3), item('middle', 2), item('oldest', 1)],
+			itemLimit: 2,
+			checkpoint: null,
+			telemetry: { provider: 'fake' },
+		});
+
+		await expect(service.ingest(SOURCE, OPTIONS, NOW, 'run-1'))
+			.resolves.toMatchObject({ discovered: 2 });
+		await expect(service.ingest(SOURCE, OPTIONS, NOW + 60, 'run-2'))
+			.resolves.toMatchObject({ discovered: 1 });
+		const rows = await env.DB.prepare(`
+			SELECT canonical_id FROM content_items ORDER BY published_at
+		`).all<{ canonical_id: string }>();
+		expect(rows.results.map(({ canonical_id }) => canonical_id))
+			.toEqual(['oldest', 'middle', 'newest']);
+	});
+
+	it('deduplicates aliases within a provider batch before writing', async () => {
+		const service = serviceFor({
+			items: [
+				{ ...item('provider-guid', 1), identityAliases: ['shared-id'] },
+				{ ...item('canonical-id', 2), identityAliases: ['shared-id'] },
+			],
+			itemLimit: 50,
+			checkpoint: null,
+			telemetry: { provider: 'fake' },
+		});
+
+		await expect(service.ingest(SOURCE, OPTIONS, NOW, 'run'))
+			.resolves.toMatchObject({ discovered: 1 });
+		const count = await env.DB.prepare('SELECT COUNT(*) AS count FROM content_items').first();
+		expect(count).toEqual({ count: 1 });
+	});
+
+	it('commits a checkpoint only after content and delivery persistence', async () => {
+		const commit = vi.fn(async () => {
+			const counts = await env.DB.prepare(`
+				SELECT
+					(SELECT COUNT(*) FROM content_items) AS items,
+					(SELECT COUNT(*) FROM message_deliveries) AS deliveries
+			`).first();
+			expect(counts).toEqual({ items: 1, deliveries: 1 });
+		});
+		const service = serviceFor({
+			items: [item('checkpointed', 1)],
+			itemLimit: null,
+			checkpoint: { commit },
+			telemetry: { provider: 'fake' },
+		});
+
+		await service.ingest(SOURCE, OPTIONS, NOW, 'run');
+		expect(commit).toHaveBeenCalledWith(NOW);
+	});
+
+	it('rejects a finite item limit combined with a checkpoint', async () => {
+		const invalid = {
+			items: [item('invalid', 1)],
+			itemLimit: 1,
+			checkpoint: { commit: async () => undefined },
+			telemetry: { provider: 'fake' },
+		} as unknown as IngestionBatch;
+
+		await expect(serviceFor(invalid).ingest(SOURCE, OPTIONS, NOW, 'run'))
+			.rejects.toThrow('cannot combine itemLimit with a checkpoint');
+		const count = await env.DB.prepare('SELECT COUNT(*) AS count FROM content_items').first();
+		expect(count).toEqual({ count: 0 });
+	});
+
+	function serviceFor(batch: IngestionBatch): IngestionService {
+		const adapter: SourceAdapter<Record<string, never>> = {
+			key: 'fake',
+			decodeConfig: () => ({}),
+			load: async () => batch,
+		};
+		return new IngestionService(
+			repository,
+			new SourceAdapterRegistry().register(adapter),
+		);
+	}
+});
+
+function item(externalId: string, publishedAt: number): CanonicalItem {
+	return {
+		externalId,
+		title: externalId,
+		description: null,
+		link: `https://example.com/${externalId}`,
+		author: null,
+		imageUrl: null,
+		publishedAt,
+	};
+}

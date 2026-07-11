@@ -54,8 +54,7 @@ src/
 ├── parsers/
 └── utils/
 
-migrations/    # legacy DB migration history retained during observation
-migrations_v2/ # source of truth for the production DB_V2 schema
+migrations/   # single source of truth for the production D1 schema
 test/         # workerd integration tests
 ```
 
@@ -70,13 +69,12 @@ npx wrangler queues create source-ingestion
 npx wrangler queues create source-ingestion-dlq
 ```
 
-Copy the returned D1 `database_id` into the `DB_V2` binding in `wrangler.toml`, then configure the required secrets. Existing deployments keep the legacy `DB` binding read-only for observation and reconciliation; a fresh environment does not need to import the legacy tables.
+Copy the returned D1 `database_id` into the single `DB` binding in `wrangler.toml`, then configure the required secrets.
 
 ```bash
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put IT_HOME_CHAT_ID
 npx wrangler secret put TWITTER_CHAT_ID
-npx wrangler secret put TWITTER_RSS_URL
 ```
 
 ### Optional TwitterAPI.io provider
@@ -89,15 +87,7 @@ npx wrangler secret put TWITTERAPI_IO_API_KEY
 
 After applying migrations, update operational rows transactionally through the Cloudflare Dashboard or a one-off `wrangler d1 execute --remote --command`, including the matching `source_routes` row. Never place real account INSERTs in migrations, seed SQL, or other Git-tracked files. Each connector carries a stable key, a handle without `@` in `config_json`, an `active/paused/archived` status, and per-account polling settings. Pausing a connector preserves its cursor and high-water.
 
-Optional tuning bindings default to a five-minute cadence, one page of at most 20 tweets per invocation, and replies disabled:
-
-```bash
-npx wrangler secret put TWITTERAPI_IO_POLL_MINUTES
-npx wrangler secret put TWITTERAPI_IO_MAX_PAGES
-npx wrangler secret put TWITTERAPI_IO_INCLUDE_REPLIES
-```
-
-Each connector has an independent durable checkpoint. Page-budget continuations resume from the per-account cursor in `source_connector_checkpoints`.
+Polling cadence, page budget, and replies are stored per connector in `poll_interval_seconds` and `config_json`; they are no longer global Worker bindings. Each connector has an independent durable checkpoint. Page-budget continuations resume from the per-account cursor in `source_connector_checkpoints`.
 
 The endpoint does not currently publish a stable media-field contract, so the API provider sends text plus the source link; the RSS fallback retains its existing image parsing. The provider explicitly warns that frequent polling is expensive, so review cost before increasing cadence or page depth. See the [endpoint documentation](https://docs.twitterapi.io/api-reference/endpoint/get_user_last_tweets).
 
@@ -106,14 +96,12 @@ An active `twitterapi-io.user-timeline` connector without the API key fails with
 Apply migrations before deploying the Worker:
 
 ```bash
-npm run db:v2:migrate:remote
+npm run db:migrate:remote
 npm run check
 npm run deploy
 ```
 
-`migrations_v2` creates normalized topology, connector runtime/checkpoints, canonical content, provider observations, and destination delivery tables. The production Worker reads and writes only `DB_V2`.
-
-The legacy `DB` remains a read-only snapshot of the cutover point during the observation period; it no longer receives mirrored ingestion or delivery state. Rollback is therefore not automatic. Resynchronize v2-only data before restoring legacy code, or preferably roll forward. Remove the legacy binding, repositories, and `migrations` only in a separate change after observation and backup.
+`migrations` creates normalized topology, connector runtime/checkpoints, canonical content, provider observations, and destination delivery tables. The production Worker binds and reads only this D1 schema.
 
 ## Local development
 
@@ -137,20 +125,17 @@ Useful checks:
 npm run cf:types:check
 npm run ts:check
 npm test
-npm run db:schema:v2:check
+npm run db:schema:check
 npm run db:migrate:local
 npm run db:migrations:list:remote
 npm run db:migrate:remote
-npm run db:v2:migrations:list:remote
-npm run db:v2:migrate:remote
 npm run deploy:dry
 npm run check
 ```
 
-Deployments currently bind both the legacy `DB` and normalized `DB_V2`, but only
-`DB_V2` serves production reads and writes. The legacy database is a cutover
-snapshot and no longer receives shadow mirroring. Remove it only after the v2
-observation and backup period completes.
+Deployments bind only `telegram-hub-prod` as `DB`. Source topology, runtime
+state, checkpoints, canonical content, and deliveries all use it as the single
+source of truth.
 
 ## Adding a source
 

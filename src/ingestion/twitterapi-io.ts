@@ -1,5 +1,7 @@
 import type { TwitterApiIoUserAdapterConfig } from '../config';
 import type { CanonicalItem, IngestionOptions } from '../domain/ingestion';
+import { parseDocument } from 'htmlparser2';
+import { hasChildren, isTag, type ChildNode } from 'domhandler';
 import { parseRetryAfter, SourceHttpError } from './source-http-error';
 
 interface TwitterApiIoAuthor {
@@ -11,9 +13,18 @@ interface TwitterApiIoAuthor {
 interface TwitterApiIoTweet {
 	author?: TwitterApiIoAuthor | null;
 	createdAt?: unknown;
+	entities?: unknown;
+	extended_entities?: unknown;
+	extendedEntities?: unknown;
 	id?: unknown;
+	media?: unknown;
 	text?: unknown;
 	url?: unknown;
+}
+
+interface TweetPhoto {
+	imageUrl: string;
+	shortUrls: string[];
 }
 
 interface TwitterApiIoPage {
@@ -91,7 +102,7 @@ export async function fetchTwitterApiIoBatch(
 				};
 			}
 
-			items.push(...normalizeTweet(tweet, source));
+			items.push(...await normalizeTweet(tweet, source, options));
 		}
 
 		if (!page.has_next_page) {
@@ -180,10 +191,11 @@ async function fetchPage(
 	};
 }
 
-function normalizeTweet(
+async function normalizeTweet(
 	tweet: TwitterApiIoTweet,
 	source: TwitterApiIoUserAdapterConfig,
-): CanonicalItem[] {
+	options: IngestionOptions,
+): Promise<CanonicalItem[]> {
 	const id = stringValue(tweet.id);
 	if (!id) {
 		console.warn({ event: 'twitterapi_io_tweet_skipped', reason: 'missing_id' });
@@ -208,21 +220,233 @@ function normalizeTweet(
 			: `https://x.com/i/web/status/${id}`);
 	const link = canonicalTweetLink(rawLink);
 	const externalId = `twitter:${id}`;
+	const photo = extractTweetPhoto(tweet)
+		?? await fetchTweetPhotoPage(tweet, id, options);
+	const text = stringValue(tweet.text);
 
 	return [{
 		externalId,
 		identityAliases: [...new Set([externalId, rawLink, link])],
-		title: stringValue(tweet.text),
+		title: photo ? withoutMediaShortUrls(text, photo.shortUrls) : text,
 		description: null,
 		link,
 		author: formatAuthor(author),
-		imageUrl: null,
+		imageUrl: photo?.imageUrl ?? null,
 		publishedAt,
 		metadata: {
 			provider: 'twitterapi-io',
 			parser: 'twitter',
 		},
 	}];
+}
+
+async function fetchTweetPhotoPage(
+	tweet: TwitterApiIoTweet,
+	tweetId: string,
+	options: IngestionOptions,
+): Promise<TweetPhoto | null> {
+	for (const entity of objectList(objectValue(tweet.entities)?.urls)) {
+		const pageUrl = twitterPhotoPageUrl(
+			entity.expanded_url,
+			entity.expandedUrl,
+			entity.unwound_url,
+			entity.unwoundUrl,
+		);
+		if (!pageUrl) continue;
+
+		try {
+			const response = await fetch(pageUrl, {
+				headers: { accept: 'text/html,application/xhtml+xml' },
+				redirect: 'follow',
+				signal: AbortSignal.timeout(options.feedTimeoutMs),
+			});
+			if (!response.ok) {
+				await response.body?.cancel();
+				console.warn({
+					event: 'twitter_photo_page_unavailable',
+					tweetId,
+					status: response.status,
+				});
+				continue;
+			}
+
+			const html = await readBodyWithLimit(response, options.maxFeedBytes);
+			const imageUrl = openGraphTweetImage(html);
+			if (!imageUrl) continue;
+
+			return {
+				imageUrl,
+				shortUrls: [stringValue(entity.url)].filter((value): value is string => value !== null),
+			};
+		} catch (error) {
+			console.warn({
+				event: 'twitter_photo_page_unavailable',
+				tweetId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	return null;
+}
+
+function twitterPhotoPageUrl(...values: unknown[]): string | null {
+	for (const value of values) {
+		const raw = validHttpUrl(value);
+		if (!raw) continue;
+		const url = new URL(raw);
+		const host = url.hostname.toLowerCase();
+		if (!['twitter.com', 'www.twitter.com', 'x.com', 'www.x.com'].includes(host)) continue;
+		if (!/^\/[^/]+\/status\/\d+\/photo\/\d+\/?$/u.test(url.pathname)) continue;
+		return url.toString();
+	}
+	return null;
+}
+
+function openGraphTweetImage(html: string): string | null {
+	const document = parseDocument(html, {
+		decodeEntities: true,
+		lowerCaseAttributeNames: true,
+		lowerCaseTags: true,
+		xmlMode: false,
+	});
+	return findOpenGraphTweetImage(document.children);
+}
+
+function findOpenGraphTweetImage(nodes: ChildNode[]): string | null {
+	for (const node of nodes) {
+		if (isTag(node) && node.name === 'meta') {
+			const property = (node.attribs.property ?? node.attribs.name ?? '').toLowerCase();
+			if (property === 'og:image' || property === 'twitter:image') {
+				const imageUrl = twitterMediaImageUrl(node.attribs.content);
+				if (imageUrl) return imageUrl;
+			}
+		}
+		if (hasChildren(node)) {
+			const imageUrl = findOpenGraphTweetImage(node.children);
+			if (imageUrl) return imageUrl;
+		}
+	}
+	return null;
+}
+
+function twitterMediaImageUrl(value: unknown): string | null {
+	const raw = validHttpUrl(value);
+	if (!raw) return null;
+	const url = new URL(raw);
+	if (url.hostname.toLowerCase() !== 'pbs.twimg.com' || !url.pathname.startsWith('/media/')) {
+		return null;
+	}
+	url.protocol = 'https:';
+	return url.toString();
+}
+
+function extractTweetPhoto(tweet: TwitterApiIoTweet): TweetPhoto | null {
+	const mediaContainers = [
+		objectValue(tweet.extendedEntities)?.media,
+		objectValue(tweet.extended_entities)?.media,
+		objectValue(tweet.entities)?.media,
+		tweet.media,
+	];
+
+	for (const container of mediaContainers) {
+		for (const media of objectList(container)) {
+			const mediaType = stringValue(media.type)?.toLowerCase();
+			if (mediaType && mediaType !== 'photo') continue;
+
+			const imageUrl = normalizeMediaUrl(
+				media.media_url_https,
+				media.mediaUrlHttps,
+				media.media_url,
+				media.mediaUrl,
+			);
+			if (!imageUrl) continue;
+
+			return {
+				imageUrl,
+				shortUrls: [stringValue(media.url)].filter((value): value is string => value !== null),
+			};
+		}
+	}
+
+	// Some payload variants expose a direct image through the documented URL entities
+	// instead of an extended media collection.
+	for (const entity of objectList(objectValue(tweet.entities)?.urls)) {
+		const imageUrl = directImageUrl(
+			entity.expanded_url,
+			entity.expandedUrl,
+			entity.unwound_url,
+			entity.unwoundUrl,
+		);
+		if (!imageUrl) continue;
+		return {
+			imageUrl,
+			shortUrls: [stringValue(entity.url)].filter((value): value is string => value !== null),
+		};
+	}
+
+	return null;
+}
+
+function withoutMediaShortUrls(text: string | null, shortUrls: string[]): string | null {
+	if (!text) return null;
+
+	let result = text;
+	for (const shortUrl of new Set(shortUrls)) {
+		if (!isTwitterShortUrl(shortUrl)) continue;
+		result = result.replaceAll(shortUrl, '');
+	}
+
+	const cleaned = result
+		.replace(/[ \t]+\n/gu, '\n')
+		.replace(/\n[ \t]+/gu, '\n')
+		.replace(/[ \t]{2,}/gu, ' ')
+		.replace(/\n{3,}/gu, '\n\n')
+		.trim();
+	return cleaned || text;
+}
+
+function normalizeMediaUrl(...values: unknown[]): string | null {
+	for (const value of values) {
+		const raw = validHttpUrl(value);
+		if (!raw) continue;
+		const url = new URL(raw);
+		if (url.hostname.toLowerCase() === 'pbs.twimg.com') url.protocol = 'https:';
+		return url.toString();
+	}
+	return null;
+}
+
+function directImageUrl(...values: unknown[]): string | null {
+	for (const value of values) {
+		const raw = validHttpUrl(value);
+		if (!raw) continue;
+		const url = new URL(raw);
+		const host = url.hostname.toLowerCase();
+		const format = url.searchParams.get('format')?.toLowerCase();
+		const hasImageExtension = /\.(?:gif|jpe?g|png|webp)$/iu.test(url.pathname);
+		const hasImageFormat = format ? ['gif', 'jpeg', 'jpg', 'png', 'webp'].includes(format) : false;
+		if ((host === 'pbs.twimg.com' && url.pathname.startsWith('/media/')) || hasImageExtension || hasImageFormat) {
+			if (host === 'pbs.twimg.com') url.protocol = 'https:';
+			return url.toString();
+		}
+	}
+	return null;
+}
+
+function isTwitterShortUrl(value: string): boolean {
+	try {
+		const url = new URL(value);
+		return url.protocol === 'https:' && url.hostname.toLowerCase() === 't.co';
+	} catch {
+		return false;
+	}
+}
+
+function objectList(value: unknown): Array<Record<string, unknown>> {
+	if (Array.isArray(value)) return value.filter(isObject);
+	const object = objectValue(value);
+	return object ? [object] : [];
 }
 
 function canonicalTweetLink(link: string): string {

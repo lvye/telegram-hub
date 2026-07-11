@@ -4,11 +4,12 @@ export interface ParsedFeedItem {
 	guid: string;
 	title: string;
 	description: string;
+	formattedDescription?: string;
 	link: string;
 	pubDate: string | null;
-	rawContent?: string;
 	author?: string;
 	image?: string | null;
+	imageCandidates?: string[];
 }
 
 export type FeedParser = (content: string) => ParsedFeedItem[];

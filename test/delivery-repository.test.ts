@@ -21,7 +21,129 @@ describe('DeliveryRepository', () => {
 			env.DB.prepare('DELETE FROM deliveries'),
 			env.DB.prepare('DELETE FROM items'),
 			env.DB.prepare('DELETE FROM pushed_items'),
+			env.DB.prepare('DELETE FROM source_ingestion_state'),
 		]);
+	});
+
+	it('creates a stable provider high-water from the latest known tweet identity', async () => {
+		await repository.upsertItems('TWITTER', 'telegram:TWITTER', [{
+			...ITEM,
+			externalId: 'legacy-rss-guid',
+			identityAliases: ['twitter:99'],
+			publishedAt: 1_000,
+		}], 1_000);
+		const state = await repository.getOrCreateSourceProviderState(
+			'TWITTER',
+			'twitterapi-io',
+			2_000,
+			60,
+		);
+		const second = await repository.getOrCreateSourceProviderState(
+			'TWITTER',
+			'twitterapi-io',
+			3_000,
+			60,
+		);
+
+		expect(state).toEqual({
+			highWaterExternalId: 'twitter:99',
+			initializedAt: 940,
+			lastSuccessfulPollAt: null,
+			nextCursor: null,
+			pendingHighWaterExternalId: null,
+		});
+		expect(second).toEqual(state);
+	});
+
+	it('bootstraps each subscription from only that account history', async () => {
+		await repository.upsertItems('TWITTER', 'telegram:TWITTER', [
+			{
+				...ITEM,
+				externalId: 'alpha-rss-guid',
+				identityAliases: ['twitter:100'],
+				link: 'https://x.com/AlphaAccount/status/100',
+				publishedAt: 100,
+			},
+			{
+				...ITEM,
+				externalId: 'beta-rss-guid',
+				identityAliases: ['twitter:200'],
+				link: 'https://x.com/BetaAccount/status/200',
+				publishedAt: 200,
+			},
+		], 200);
+
+		const alpha = await repository.getOrCreateSourceProviderState(
+			'TWITTER',
+			'twitterapi-io:subscription:alpha',
+			1_000,
+			60,
+			'AlphaAccount',
+		);
+		const newAccount = await repository.getOrCreateSourceProviderState(
+			'TWITTER',
+			'twitterapi-io:subscription:new',
+			1_000,
+			60,
+			'NewAccount',
+		);
+
+		expect(alpha).toMatchObject({
+			highWaterExternalId: 'twitter:100',
+			initializedAt: 40,
+		});
+		expect(newAccount).toMatchObject({
+			highWaterExternalId: null,
+			initializedAt: 940,
+		});
+	});
+
+	it('persists an incomplete provider cursor without advancing the high-water', async () => {
+		const previous = await repository.getOrCreateSourceProviderState(
+			'TWITTER',
+			'twitterapi-io',
+			1_000,
+			0,
+		);
+		await repository.updateSourceIngestionProgress('TWITTER', 'twitterapi-io', {
+			...previous,
+		}, {
+			highWaterExternalId: 'twitter:10',
+			nextCursor: 'older-page',
+			pendingHighWaterExternalId: 'twitter:30',
+		}, 1_100);
+
+		await expect(repository.getSourceProviderState('TWITTER', 'twitterapi-io')).resolves.toMatchObject({
+			highWaterExternalId: 'twitter:10',
+			lastSuccessfulPollAt: 1_100,
+			nextCursor: 'older-page',
+			pendingHighWaterExternalId: 'twitter:30',
+		});
+	});
+
+	it('uses indexed aliases for cross-provider identity lookup', async () => {
+		await repository.upsertItems('TWITTER', 'telegram:TWITTER', [{
+			...ITEM,
+			externalId: 'legacy-rss-guid',
+			identityAliases: ['twitter:123'],
+			link: 'https://twitter.com/OpenAI/status/123?ref=rss',
+		}], 1_000);
+
+		const existing = await repository.findExistingItemIdentities('TWITTER', [{
+			externalId: 'twitter:123',
+			identityAliases: ['twitter:123', 'https://x.com/OpenAI/status/123'],
+		}]);
+
+		expect(existing).toEqual(new Set(['twitter:123']));
+		const plan = await env.DB.prepare(`
+			EXPLAIN QUERY PLAN
+			SELECT 1
+			FROM item_identity_aliases
+			WHERE source_key = ? AND alias = ?
+		`).bind('TWITTER', 'twitter:123').all<{ detail: string }>();
+		expect(plan.results.map((row) => row.detail).join('\n')).toMatch(
+			/source_key=.*alias=/,
+		);
 	});
 
 	it('keeps the same external id independent across sources', async () => {
@@ -35,8 +157,8 @@ describe('DeliveryRepository', () => {
 		expect(deliveries).toHaveLength(2);
 	});
 
-	it('persists a full 50-item ingestion batch within D1 binding limits', async () => {
-		const items = Array.from({ length: 50 }, (_, index): ItemInput => ({
+	it('persists a full 100-tweet API page budget within D1 binding limits', async () => {
+		const items = Array.from({ length: 100 }, (_, index): ItemInput => ({
 			...ITEM,
 			externalId: `batch-item-${index}`,
 			link: `https://example.com/items/${index}`,
@@ -49,8 +171,8 @@ describe('DeliveryRepository', () => {
 			FROM items
 			WHERE source_key = 'SOURCE_A'
 		`).first<{ count: number }>();
-		expect(itemCount?.count).toBe(50);
-		await expect(repository.listDispatchable(1_000, 100)).resolves.toHaveLength(50);
+		expect(itemCount?.count).toBe(100);
+		await expect(repository.listDispatchable(1_000, 100)).resolves.toHaveLength(100);
 	});
 
 	it('does not rewrite an unchanged feed item', async () => {
@@ -63,6 +185,23 @@ describe('DeliveryRepository', () => {
 			WHERE source_key = ? AND external_id = ?
 		`).bind('SOURCE_A', ITEM.externalId).first<{ updated_at: number }>();
 		expect(row).toEqual({ updated_at: 1_000 });
+	});
+
+	it('only restores Telegram HTML with the exact supported metadata version', async () => {
+		await repository.upsertItems('SOURCE_A', 'telegram:SOURCE_A', [{
+			...ITEM,
+			metadata: {
+				descriptionFormat: 'future-version',
+				telegramHtmlDescription: '<b>must not be trusted</b>',
+			},
+		}], 1_000);
+		const [{ deliveryId }] = await repository.listDispatchable(1_000);
+		const lease = await repository.acquireLease(deliveryId, 'version-gate', 1_000);
+
+		expect(lease).toMatchObject({
+			description: ITEM.description,
+			formattedDescription: null,
+		});
 	});
 
 	it('does not reset a terminal delivery when the feed repeats an item', async () => {

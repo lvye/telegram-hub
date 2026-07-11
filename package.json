@@ -20,5 +20,10 @@
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
     "wrangler": "^4.110.0"
+  },
+  "dependencies": {
+    "domhandler": "^6.0.1",
+    "fast-xml-parser": "^5.9.3",
+    "htmlparser2": "^12.0.0"
   }
 }

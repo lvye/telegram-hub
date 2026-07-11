@@ -5,3 +5,12 @@ TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 IT_HOME_CHAT_ID=your-it-home-chat-id
 TWITTER_CHAT_ID=your-twitter-chat-id
 TWITTER_RSS_URL=https://rss.app/feeds/your-feed.xml
+
+# 可选：设置 API key 后，从 D1 twitter_subscriptions 表加载账号。
+# USER_ID/USER_NAME 仅用于兼容旧的单账号配置。
+# TWITTERAPI_IO_USER_ID=your-twitter-user-id
+# TWITTERAPI_IO_USER_NAME=your-twitter-screen-name
+# TWITTERAPI_IO_API_KEY=your-twitterapi-io-api-key
+# TWITTERAPI_IO_POLL_MINUTES=5
+# TWITTERAPI_IO_MAX_PAGES=1
+# TWITTERAPI_IO_INCLUDE_REPLIES=false

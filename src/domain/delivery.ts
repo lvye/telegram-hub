@@ -9,6 +9,7 @@ export type DeliveryStatus =
 
 export interface ItemInput {
 	externalId: string;
+	identityAliases?: string[];
 	title: string | null;
 	description: string | null;
 	link: string | null;
@@ -44,6 +45,7 @@ export interface DeliveryLease {
 	externalId: string;
 	title: string | null;
 	description: string | null;
+	formattedDescription?: string | null;
 	link: string | null;
 	author: string | null;
 	imageUrl: string | null;

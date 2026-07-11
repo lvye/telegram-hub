@@ -13,6 +13,10 @@ const ITEM: ItemInput = {
 	author: null,
 	imageUrl: 'https://example.com/image.jpg',
 	publishedAt: 1_000,
+	metadata: {
+		descriptionFormat: 'telegram-html-v1',
+		telegramHtmlDescription: '<b>Payload</b>',
+	},
 };
 
 describe('scheduled handler', () => {
@@ -32,6 +36,7 @@ describe('scheduled handler', () => {
 			env.DB.prepare('DELETE FROM deliveries'),
 			env.DB.prepare('DELETE FROM items'),
 			env.DB.prepare('DELETE FROM pushed_items'),
+			env.DB.prepare('DELETE FROM twitter_subscriptions'),
 		]);
 	});
 
@@ -69,11 +74,12 @@ describe('scheduled handler', () => {
 
 		expect(sendBatch).not.toHaveBeenCalled();
 		expect(globalThis.fetch).not.toHaveBeenCalled();
-		const item = await env.DB.prepare('SELECT description, image_url FROM items').first<{
+		const item = await env.DB.prepare('SELECT description, image_url, metadata_json FROM items').first<{
 			description: string | null;
 			image_url: string | null;
+			metadata_json: string;
 		}>();
-		expect(item).toEqual({ description: null, image_url: null });
+		expect(item).toEqual({ description: null, image_url: null, metadata_json: '{}' });
 	});
 });
 

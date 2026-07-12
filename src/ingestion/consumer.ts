@@ -1,11 +1,11 @@
 import type { AppConfig } from '../config';
-import { dispatchReadyDeliveries } from '../delivery/dispatcher';
 import type { IngestionJob } from '../domain/ingestion';
 import { DeliveryRepository } from '../persistence/delivery-repository';
 import { SourceRuntimeStateRepository } from '../persistence/source-runtime-state-repository';
 import { IngestionService } from './ingestion-service';
 import { defaultSourceAdapterRegistry, validateRuntimeTopology } from './ingest-sources';
 import { D1SourceCatalog } from './source-catalog';
+import { SourceIngestionLimitError } from './source-ingestion-limit-error';
 import { SourceHttpError } from './source-http-error';
 
 const MAX_DELAY_SECONDS = 86_400;
@@ -90,7 +90,6 @@ export async function consumeIngestionBatch(
 		}
 	}
 
-	await dispatchReadyDeliveries(env, config);
 }
 
 export async function consumeIngestionDeadLetterBatch(
@@ -225,6 +224,14 @@ function ingestionErrorDetails(error: unknown): {
 	retryAfterSeconds: number | null;
 } {
 	const message = error instanceof Error ? error.message : String(error);
+	if (error instanceof SourceIngestionLimitError) {
+		return {
+			code: error.code,
+			message,
+			permanent: true,
+			retryAfterSeconds: null,
+		};
+	}
 	if (!(error instanceof SourceHttpError)) {
 		return {
 			code: 'UNEXPECTED_INGESTION_ERROR',

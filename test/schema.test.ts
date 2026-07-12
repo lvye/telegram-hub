@@ -108,6 +108,27 @@ it('creates the normalized schema with enforced identities and state invariants'
 });
 
 it('uses partial indexes for due connectors and dispatchable deliveries without sorting', async () => {
+	const identityPlan = await env.SCHEMA_DB.prepare(`
+		EXPLAIN QUERY PLAN
+		SELECT identity_value, item_id
+		FROM item_identities
+		WHERE identity_namespace = ? AND identity_value IN (?, ?)
+	`).bind('twitter:status', 'twitter:123', 'twitter:456').all<{ detail: string }>();
+	const identityDetails = identityPlan.results.map(({ detail }) => detail);
+	expect(identityDetails.some((detail) => (
+		detail.includes('SEARCH item_identities')
+		&& detail.includes('identity_namespace=?')
+		&& detail.includes('identity_value=?')
+	))).toBe(true);
+	expect(identityDetails.every((detail) => !detail.includes('SCAN item_identities'))).toBe(true);
+	const identityLookup = await env.SCHEMA_DB.prepare(`
+		SELECT identity_value, item_id
+		FROM item_identities
+		WHERE identity_namespace = ? AND identity_value IN (?, ?)
+	`).bind('twitter:status', 'twitter:123', 'twitter:missing').all();
+	expect(identityLookup.results).toHaveLength(1);
+	expect(identityLookup.meta.rows_read).toBeLessThanOrEqual(3);
+
 	const connectorPlan = await env.SCHEMA_DB.prepare(`
 		EXPLAIN QUERY PLAN
 		SELECT connector_id

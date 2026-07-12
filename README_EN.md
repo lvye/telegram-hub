@@ -33,11 +33,15 @@ The Worker only exposes read-only `GET /health` and `GET /health/ready` endpoint
 - Nitter, TwitterAPI.io, and legacy RSS share the `twitter` identity namespace; RSS keeps its provider GUID while tweet status IDs deduplicate across providers
 - The latest known RSS tweet identity becomes the handoff high-water, avoiding wall-clock gaps; table-backed accounts fail independently instead of fetching the same RSS fallback repeatedly
 - API cursors, pending high-water, and committed high-water are durable; a page-budget stop resumes on the next eligible Cron
-- The full byte-bounded feed is scanned, while each run writes only the oldest 50 unseen identities; repeated feeds do not rewrite `content_items/message_deliveries`, and delayed items beyond the first window are drained later
+- Each source run accepts at most 500 raw candidates and 1,000 deduplicated identity aliases; oversized batches mark the source `blocked` instead of consuming D1 and Queue resources without a bound
+- Each run persists at most 50 unseen items; checkpointed providers commit only after their backlog drains across bounded windows, so the window cannot skip content
+- Known identities use chunked primary-key lookups on `(identity_namespace, identity_value)` and reuse the resolved item IDs instead of repeatedly joining the full identity table
+- Repeated feeds do not rewrite `content_items/message_deliveries`, and `item_observations` refresh at most once per hour
 - Per-destination delivery state and recoverable D1 leases
 - Queue-delayed retries for retryable Telegram responses; permanent API errors go directly to `dead`
 - Native Cloudflare DLQ reconciliation; non-exhausted application work returns to `retry`
 - Batched D1 statements stay within the per-invocation query budget of Workers Free
+- The ingestion Queue consumes one source job per invocation; the minute Cron is the single delivery dispatcher, avoiding redundant scans and competing enqueue attempts
 - D1, Cron, Queue, and HTTP tests run inside workerd
 
 ## Layout

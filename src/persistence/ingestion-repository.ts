@@ -4,11 +4,16 @@ import type {
 	TwitterApiIoCheckpointProgress,
 } from '../ingestion/twitter-api-checkpoint';
 
+export interface ResolvedItemCandidate {
+	externalId: string;
+	itemId: number;
+}
+
 export interface IngestionRepository {
-	findExistingItemIdentities(
+	resolveExistingItems(
 		identityNamespace: string,
 		candidates: Array<Pick<CanonicalItem, 'externalId' | 'identityAliases'>>,
-	): Promise<Set<string>>;
+	): Promise<ResolvedItemCandidate[]>;
 	upsertItems(
 		identityNamespace: string,
 		destinationKey: string,
@@ -16,10 +21,9 @@ export interface IngestionRepository {
 		now?: number,
 		sourceId?: string,
 	): Promise<void>;
-	ensureDeliveriesForCandidates(
-		identityNamespace: string,
+	observeAndEnsureDeliveries(
 		destinationKey: string,
-		candidates: Array<Pick<CanonicalItem, 'externalId' | 'identityAliases'>>,
+		candidates: ResolvedItemCandidate[],
 		now?: number,
 		sourceId?: string,
 	): Promise<number>;

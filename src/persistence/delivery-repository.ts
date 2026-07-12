@@ -9,14 +9,14 @@ import type {
 	TwitterApiIoCheckpoint,
 	TwitterApiIoCheckpointProgress,
 } from '../ingestion/twitter-api-checkpoint';
-import type { IngestionRepository } from './ingestion-repository';
+import type {
+	IngestionRepository,
+	ResolvedItemCandidate,
+} from './ingestion-repository';
 
-interface CandidateIdentityRow {
-	candidate_external_id: string;
-}
-
-interface AmbiguousCandidateRow {
-	ambiguous_count: number;
+interface IdentityMatchRow {
+	identity_value: string;
+	item_id: number;
 }
 
 interface DeliveryLeaseRow {
@@ -54,6 +54,8 @@ interface CheckpointRow {
 
 const UPSERT_CHUNK_SIZE = 9;
 const UPDATE_ID_CHUNK_SIZE = 98;
+const IDENTITY_LOOKUP_CHUNK_SIZE = 99;
+const OBSERVATION_REFRESH_SECONDS = 60 * 60;
 const MAX_ERROR_LENGTH = 1_000;
 
 export class DeliveryRepository implements IngestionRepository {
@@ -163,113 +165,112 @@ export class DeliveryRepository implements IngestionRepository {
 		await this.db.batch(statements);
 	}
 
-	async findExistingItemIdentities(
+	async resolveExistingItems(
 		identityNamespace: string,
 		candidates: Array<Pick<CanonicalItem, 'externalId' | 'identityAliases'>>,
-	): Promise<Set<string>> {
-		if (candidates.length === 0) return new Set();
-		const payload = candidatePayload(candidates);
-		const result = await this.db.prepare(`
-			SELECT DISTINCT
-				CAST(json_extract(candidate.value, '$.externalId') AS TEXT)
-					AS candidate_external_id
-			FROM json_each(?) AS candidate
-			JOIN json_each(candidate.value, '$.aliases') AS alias
-			WHERE alias.type = 'text'
-				AND EXISTS (
-					SELECT 1
-					FROM item_identities AS identity
-					WHERE identity.identity_namespace = ?
-						AND identity.identity_value = CAST(alias.value AS TEXT)
-				)
-		`).bind(payload, identityNamespace).all<CandidateIdentityRow>();
-		return new Set(result.results.map(({ candidate_external_id }) => candidate_external_id));
+	): Promise<ResolvedItemCandidate[]> {
+		if (candidates.length === 0) return [];
+
+		const candidateIdsByAlias = new Map<string, Set<string>>();
+		const candidateOrder: string[] = [];
+		const seenCandidateIds = new Set<string>();
+		for (const candidate of candidates) {
+			if (!seenCandidateIds.has(candidate.externalId)) {
+				candidateOrder.push(candidate.externalId);
+				seenCandidateIds.add(candidate.externalId);
+			}
+			for (const alias of new Set([candidate.externalId, ...(candidate.identityAliases ?? [])])) {
+				const candidateIds = candidateIdsByAlias.get(alias) ?? new Set<string>();
+				candidateIds.add(candidate.externalId);
+				candidateIdsByAlias.set(alias, candidateIds);
+			}
+		}
+
+		const itemIdsByCandidate = new Map<string, Set<number>>();
+		const aliases = [...candidateIdsByAlias.keys()];
+		for (let offset = 0; offset < aliases.length; offset += IDENTITY_LOOKUP_CHUNK_SIZE) {
+			const chunk = aliases.slice(offset, offset + IDENTITY_LOOKUP_CHUNK_SIZE);
+			const placeholders = chunk.map(() => '?').join(',');
+			const result = await this.db.prepare(`
+				SELECT identity_value, item_id
+				FROM item_identities
+				WHERE identity_namespace = ? AND identity_value IN (${placeholders})
+			`).bind(identityNamespace, ...chunk).all<IdentityMatchRow>();
+			for (const row of result.results) {
+				for (const candidateId of candidateIdsByAlias.get(row.identity_value) ?? []) {
+					const itemIds = itemIdsByCandidate.get(candidateId) ?? new Set<number>();
+					itemIds.add(row.item_id);
+					itemIdsByCandidate.set(candidateId, itemIds);
+				}
+			}
+		}
+
+		const ambiguous = candidateOrder.filter((candidateId) => (
+			(itemIdsByCandidate.get(candidateId)?.size ?? 0) > 1
+		));
+		if (ambiguous.length > 0) {
+			throw new Error(
+				`Ambiguous item identities for ${identityNamespace}: `
+				+ `${ambiguous.length} candidate(s) matched multiple items`,
+			);
+		}
+
+		return candidateOrder.flatMap((externalId) => {
+			const itemId = itemIdsByCandidate.get(externalId)?.values().next().value;
+			return itemId === undefined ? [] : [{ externalId, itemId }];
+		});
 	}
 
-	async ensureDeliveriesForCandidates(
-		identityNamespace: string,
+	async observeAndEnsureDeliveries(
 		destinationKey: string,
-		candidates: Array<Pick<CanonicalItem, 'externalId' | 'identityAliases'>>,
+		candidates: ResolvedItemCandidate[],
 		now = currentUnixTime(),
 		sourceId?: string,
 	): Promise<number> {
 		if (candidates.length === 0) return 0;
-		const payload = candidatePayload(candidates);
-		const ambiguity = await this.db.prepare(`
-			SELECT COUNT(*) AS ambiguous_count
-			FROM (
-				SELECT candidate.key
-				FROM json_each(?) AS candidate
-				JOIN json_each(candidate.value, '$.aliases') AS alias
-				JOIN item_identities AS identity
-					ON identity.identity_namespace = ?
-					AND identity.identity_value = CAST(alias.value AS TEXT)
-				WHERE alias.type = 'text'
-				GROUP BY candidate.key
-				HAVING COUNT(DISTINCT identity.item_id) > 1
-			)
-		`).bind(payload, identityNamespace).first<AmbiguousCandidateRow>();
-		if ((ambiguity?.ambiguous_count ?? 0) > 0) {
-			throw new Error(
-				`Ambiguous item identities for ${identityNamespace}: `
-				+ `${ambiguity!.ambiguous_count} candidate(s) matched multiple items`,
-			);
-		}
+		const payload = resolvedCandidatePayload(candidates);
+		const statements: D1PreparedStatement[] = [];
 		if (sourceId) {
-			await this.db.prepare(`
-				WITH resolved AS (
-					SELECT
-						CAST(json_extract(candidate.value, '$.externalId') AS TEXT)
-							AS provider_item_id,
-						MIN(identity.item_id) AS item_id
-					FROM json_each(?) AS candidate
-					JOIN json_each(candidate.value, '$.aliases') AS alias
-					JOIN item_identities AS identity
-						ON identity.identity_namespace = ?
-						AND identity.identity_value = CAST(alias.value AS TEXT)
-					WHERE alias.type = 'text'
-					GROUP BY candidate.key
-					HAVING COUNT(DISTINCT identity.item_id) = 1
-				)
+			statements.push(this.db.prepare(`
 				INSERT INTO item_observations (
 					connector_id, item_id, provider_item_id,
 					first_observed_at, last_observed_at, metadata_json
 				)
-				SELECT connectors.id, resolved.item_id, resolved.provider_item_id,
+				SELECT
+					connectors.id,
+					CAST(json_extract(candidate.value, '$.itemId') AS INTEGER),
+					CAST(json_extract(candidate.value, '$.externalId') AS TEXT),
 					?, ?, '{}'
-				FROM resolved
+				FROM json_each(?) AS candidate
 				JOIN source_connectors AS connectors ON connectors.connector_key = ?
 				ON CONFLICT (connector_id, item_id) DO UPDATE SET
 					last_observed_at = excluded.last_observed_at
-			`).bind(payload, identityNamespace, now, now, sourceId).run();
+				WHERE excluded.last_observed_at - item_observations.last_observed_at >= ?
+			`).bind(now, now, payload, sourceId, OBSERVATION_REFRESH_SECONDS));
 		}
-		const result = await this.db.prepare(`
-			WITH resolved AS (
-				SELECT MIN(identity.item_id) AS item_id
-				FROM json_each(?) AS candidate
-				JOIN json_each(candidate.value, '$.aliases') AS alias
-				JOIN item_identities AS identity
-					ON identity.identity_namespace = ?
-					AND identity.identity_value = CAST(alias.value AS TEXT)
-				WHERE alias.type = 'text'
-				GROUP BY candidate.key
-				HAVING COUNT(DISTINCT identity.item_id) = 1
-			)
+		statements.push(this.db.prepare(`
 			INSERT OR IGNORE INTO message_deliveries (
-				item_id, destination_id, state, next_attempt_at, created_at, updated_at
+				item_id, destination_id, trigger_source_id,
+				state, next_attempt_at, created_at, updated_at
 			)
-			SELECT DISTINCT resolved.item_id, destinations.id, 'pending', ?, ?, ?
-			FROM resolved
+			SELECT DISTINCT
+				CAST(json_extract(candidate.value, '$.itemId') AS INTEGER),
+				destinations.id,
+				connectors.source_id,
+				'pending', ?, ?, ?
+			FROM json_each(?) AS candidate
 			JOIN destinations ON destinations.destination_key = ?
+			LEFT JOIN source_connectors AS connectors ON connectors.connector_key = ?
 		`).bind(
+			now,
+			now,
+			now,
 			payload,
-			identityNamespace,
-			now,
-			now,
-			now,
 			normalizeDestinationKey(destinationKey),
-		).run();
-		return result.meta.changes ?? 0;
+			sourceId ?? null,
+		));
+		const results = await this.db.batch(statements);
+		return results[results.length - 1]?.meta.changes ?? 0;
 	}
 
 	async getOrCreateSourceProviderState(
@@ -688,6 +689,10 @@ function candidatePayload(
 		externalId: item.externalId,
 		aliases: [...new Set([item.externalId, ...(item.identityAliases ?? [])])],
 	})));
+}
+
+function resolvedCandidatePayload(items: ResolvedItemCandidate[]): string {
+	return JSON.stringify(items.map(({ externalId, itemId }) => ({ externalId, itemId })));
 }
 
 function mapLease(row: DeliveryLeaseRow): DeliveryLease {

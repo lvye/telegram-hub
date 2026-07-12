@@ -22,6 +22,8 @@ const CHECKPOINT: TwitterApiIoCheckpoint = {
 const OPTIONS: IngestionOptions = {
 	feedTimeoutMs: 1_000,
 	maxFeedBytes: 100_000,
+	maxCandidatesPerSource: 500,
+	maxIdentityAliasesPerSource: 1_000,
 	maxItemsPerSource: 50,
 };
 

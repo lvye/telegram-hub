@@ -69,6 +69,8 @@ export interface AppConfig {
 	ingestion: {
 		feedTimeoutMs: number;
 		maxFeedBytes: number;
+		maxCandidatesPerSource: number;
+		maxIdentityAliasesPerSource: number;
 		maxItemsPerSource: number;
 		leaseSeconds: number;
 		queueClaimSeconds: number;
@@ -116,6 +118,8 @@ export function getConfig(env: Env): AppConfig {
 		ingestion: {
 			feedTimeoutMs: 15_000,
 			maxFeedBytes: 2 * 1024 * 1024,
+			maxCandidatesPerSource: 500,
+			maxIdentityAliasesPerSource: 1_000,
 			maxItemsPerSource: 50,
 			leaseSeconds: 5 * 60,
 			queueClaimSeconds: 5 * 60,

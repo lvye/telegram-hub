@@ -54,7 +54,7 @@ export class TwitterApiIoUserSourceAdapter implements SourceAdapter<TwitterApiIo
 
 			return {
 				items: eligibleItems(apiBatch.items, checkpoint),
-				itemLimit: null,
+				itemLimit: context.options.maxItemsPerSource,
 				checkpoint: {
 					commit: (updatedAt) => this.checkpoints.commit(
 						source.identityNamespace,

@@ -67,6 +67,93 @@ describe('IngestionService', () => {
 		expect(count).toEqual({ count: 1 });
 	});
 
+	it('rejects oversized candidate batches before content persistence', async () => {
+		const commit = vi.fn(async () => undefined);
+		const service = serviceFor({
+			items: Array.from({ length: 501 }, (_, index) => item(`candidate-${index}`, index)),
+			itemLimit: 50,
+			checkpoint: { commit },
+			telemetry: { provider: 'fake' },
+		});
+
+		await expect(service.ingest(SOURCE, OPTIONS, NOW, 'run'))
+			.rejects.toThrow('returned 501 candidates; limit is 500');
+		expect(commit).not.toHaveBeenCalled();
+		const counts = await env.DB.prepare(`
+			SELECT
+				(SELECT COUNT(*) FROM content_items) AS items,
+				(SELECT COUNT(*) FROM message_deliveries) AS deliveries
+		`).first();
+		expect(counts).toEqual({ items: 0, deliveries: 0 });
+	});
+
+	it('drains a checkpoint batch before advancing its checkpoint', async () => {
+		const commit = vi.fn(async () => undefined);
+		const service = serviceFor({
+			items: Array.from({ length: 120 }, (_, index) => item(`candidate-${index}`, index)),
+			itemLimit: 50,
+			checkpoint: { commit },
+			telemetry: { provider: 'fake' },
+		});
+
+		await expect(service.ingest(SOURCE, OPTIONS, NOW, 'run-1'))
+			.resolves.toMatchObject({ discovered: 50 });
+		expect(commit).not.toHaveBeenCalled();
+		await expect(service.ingest(SOURCE, OPTIONS, NOW + 60, 'run-2'))
+			.resolves.toMatchObject({ discovered: 50 });
+		expect(commit).not.toHaveBeenCalled();
+		await expect(service.ingest(SOURCE, OPTIONS, NOW + 120, 'run-3'))
+			.resolves.toMatchObject({ discovered: 20 });
+		expect(commit).toHaveBeenCalledWith(NOW + 120);
+	});
+
+	it('routes every known checkpoint candidate before advancing the checkpoint', async () => {
+		const candidates = Array.from(
+			{ length: 120 },
+			(_, index) => item(`known-${index}`, index),
+		);
+		await repository.upsertItems(
+			SOURCE.identityNamespace,
+			'telegram:TWITTER',
+			candidates,
+			NOW,
+		);
+		const commit = vi.fn(async () => undefined);
+		const service = serviceFor({
+			items: candidates,
+			itemLimit: 50,
+			checkpoint: { commit },
+			telemetry: { provider: 'fake' },
+		});
+
+		await expect(service.ingest(SOURCE, OPTIONS, NOW + 60, 'run'))
+			.resolves.toMatchObject({ discovered: 0 });
+		expect(commit).toHaveBeenCalledWith(NOW + 60);
+		const count = await env.DB.prepare(`
+			SELECT COUNT(*) AS count
+			FROM message_deliveries AS deliveries
+			JOIN destinations ON destinations.id = deliveries.destination_id
+			WHERE destinations.destination_key = 'telegram:it-home'
+		`).first();
+		expect(count).toEqual({ count: 120 });
+	});
+
+	it('rejects identity alias expansion beyond the D1 query budget', async () => {
+		const candidate = {
+			...item('alias-heavy', 1),
+			identityAliases: Array.from({ length: 1_000 }, (_, index) => `alias:${index}`),
+		};
+		const service = serviceFor({
+			items: [candidate],
+			itemLimit: 50,
+			checkpoint: null,
+			telemetry: { provider: 'fake' },
+		});
+
+		await expect(service.ingest(SOURCE, OPTIONS, NOW, 'run'))
+			.rejects.toThrow('returned 1001 identity aliases; limit is 1000');
+	});
+
 	it('commits a checkpoint only after content and delivery persistence', async () => {
 		const commit = vi.fn(async () => {
 			const counts = await env.DB.prepare(`
@@ -78,7 +165,7 @@ describe('IngestionService', () => {
 		});
 		const service = serviceFor({
 			items: [item('checkpointed', 1)],
-			itemLimit: null,
+			itemLimit: 50,
 			checkpoint: { commit },
 			telemetry: { provider: 'fake' },
 		});
@@ -87,18 +174,30 @@ describe('IngestionService', () => {
 		expect(commit).toHaveBeenCalledWith(NOW);
 	});
 
-	it('rejects a finite item limit combined with a checkpoint', async () => {
+	it('rejects a non-positive item limit', async () => {
 		const invalid = {
 			items: [item('invalid', 1)],
-			itemLimit: 1,
-			checkpoint: { commit: async () => undefined },
+			itemLimit: 0,
+			checkpoint: null,
 			telemetry: { provider: 'fake' },
 		} as unknown as IngestionBatch;
 
 		await expect(serviceFor(invalid).ingest(SOURCE, OPTIONS, NOW, 'run'))
-			.rejects.toThrow('cannot combine itemLimit with a checkpoint');
+			.rejects.toThrow('itemLimit must be a positive integer');
 		const count = await env.DB.prepare('SELECT COUNT(*) AS count FROM content_items').first();
 		expect(count).toEqual({ count: 0 });
+	});
+
+	it('rejects an adapter item limit above the configured write budget', async () => {
+		const invalid = {
+			items: [item('invalid', 1)],
+			itemLimit: 51,
+			checkpoint: null,
+			telemetry: { provider: 'fake' },
+		} as IngestionBatch;
+
+		await expect(serviceFor(invalid).ingest(SOURCE, OPTIONS, NOW, 'run'))
+			.rejects.toThrow('itemLimit 51 exceeds configured maximum 50');
 	});
 
 	function serviceFor(batch: IngestionBatch): IngestionService {

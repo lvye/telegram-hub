@@ -43,12 +43,16 @@ Worker 仅保留只读的 `GET /health` 和 `GET /health/ready`。readiness 会�
 - Nitter、TwitterAPI.io 与旧 RSS 共用 `twitter` identity namespace；RSS 保留原 GUID，tweet status ID 负责跨 provider 去重
 - 最新已知 RSS tweet identity 作为切换 high-water，避免墙钟 cutover 漏推；订阅表中的账号独立失败，不会重复抓取同一个 RSS fallback
 - TwitterAPI.io 的 cursor、pending high-water 与 committed high-water 持久化到 D1；单轮达到 page budget 后下轮续拉
-- 扫描整个受 2 MB 上限保护的 Feed，每轮只写入最早的 50 个未见 identity；重复 Feed 对 `content_items/message_deliveries` 零写入，窗口外延迟文章会在后续轮次补入
+- 每个来源单轮最多接受 500 个原始候选和 1,000 个去重 identity alias；超限会标记为 `blocked`，避免无界结果持续消耗 D1 与 Queue
+- 每轮最多持久化 50 个未见内容；带 checkpoint 的来源会在多轮排空 backlog 后才提交 checkpoint，不会因窗口限制跳过内容
+- 已见 identity 通过 `(identity_namespace, identity_value)` 主键分块点查并复用解析结果，不再反复联结整张 identity 表
+- 重复 Feed 对 `content_items/message_deliveries` 零写入，`item_observations` 最多每小时刷新一次
 - 使用 `(item_id, destination_key)` 独立跟踪每次投递
 - D1 lease 支持中断后的安全重领
 - Telegram 429 使用 Queue `delaySeconds` 重试，不在 Worker 中长时间 sleep
 - 永久业务错误直接记录为 `dead`；未被 consumer 正常处理的消息由 Cloudflare 原生 DLQ 接管，未耗尽应用尝试时恢复为 `retry`
 - 批量 D1 写入控制在 Workers Free 计划单次调用的查询预算内
+- Ingestion Queue 每次只消费一个来源任务；delivery 统一由每分钟 Cron 调度，避免多 consumer 重复扫描和竞争入队
 - `@cloudflare/vitest-pool-workers` 在真实 workerd 环境中测试 D1、Cron 和 Queue
 
 ## 项目结构

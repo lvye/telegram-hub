@@ -33,6 +33,8 @@ export interface IngestionJob {
 export interface IngestionOptions {
 	feedTimeoutMs: number;
 	maxFeedBytes: number;
+	maxCandidatesPerSource: number;
+	maxIdentityAliasesPerSource: number;
 	maxItemsPerSource: number;
 }
 
@@ -53,21 +55,14 @@ export interface IngestionCheckpointCommit {
 	commit(updatedAt: number): Promise<void>;
 }
 
-interface IngestionBatchBase {
+export interface IngestionBatch {
 	items: CanonicalItem[];
+	/** Maximum unseen items to persist in this run. */
+	itemLimit: number;
+	/** Committed only after every unseen item in this batch has been persisted. */
+	checkpoint: IngestionCheckpointCommit | null;
 	telemetry: IngestionTelemetry;
 }
-
-export type IngestionBatch = IngestionBatchBase & (
-	| {
-		itemLimit: null;
-		checkpoint: IngestionCheckpointCommit | null;
-	}
-	| {
-		itemLimit: number;
-		checkpoint: null;
-	}
-);
 
 export interface SourceAdapter<TConfig = unknown> {
 	readonly key: string;

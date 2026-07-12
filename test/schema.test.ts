@@ -107,7 +107,67 @@ it('creates the normalized schema with enforced identities and state invariants'
 	`).bind(now).run()).rejects.toThrow();
 });
 
-it('uses partial indexes for due connectors and dispatchable deliveries without sorting', async () => {
+it('uses bounded point lookups and partial indexes for hot paths', async () => {
+	await env.SCHEMA_DB.prepare(`
+		WITH RECURSIVE sequence(value) AS (
+			SELECT 1
+			UNION ALL
+			SELECT value + 1 FROM sequence WHERE value < 1000
+		)
+		INSERT INTO content_items (
+			identity_namespace, canonical_id, created_at, updated_at
+		)
+		SELECT 'rss:lookup', 'candidate-' || value, 1783760000, 1783760000
+		FROM sequence
+	`).run();
+	const contentCandidates = JSON.stringify([
+		{ externalId: 'candidate-1' },
+		{ externalId: 'candidate-1000' },
+	]);
+	const contentItemPlan = await env.SCHEMA_DB.prepare(`
+		EXPLAIN QUERY PLAN
+		WITH candidates AS MATERIALIZED (
+			SELECT
+				CAST(json_extract(candidate.value, '$.externalId') AS TEXT) AS external_id,
+				(
+					SELECT items.id
+					FROM content_items AS items
+					WHERE items.identity_namespace = ?
+						AND items.canonical_id = CAST(
+							json_extract(candidate.value, '$.externalId') AS TEXT
+						)
+				) AS item_id
+			FROM json_each(?) AS candidate
+		)
+		SELECT external_id, item_id FROM candidates
+	`).bind('rss:lookup', contentCandidates).all<{ detail: string }>();
+	const contentItemDetails = contentItemPlan.results.map(({ detail }) => detail);
+	expect(contentItemDetails.some((detail) => (
+		detail.includes('SEARCH items')
+		&& detail.includes('identity_namespace=?')
+		&& detail.includes('canonical_id=?')
+	))).toBe(true);
+	expect(contentItemDetails.every((detail) => !detail.includes('SCAN content_items'))).toBe(true);
+	const contentItemLookup = await env.SCHEMA_DB.prepare(`
+		WITH candidates AS MATERIALIZED (
+			SELECT
+				CAST(json_extract(candidate.value, '$.externalId') AS TEXT) AS external_id,
+				(
+					SELECT items.id
+					FROM content_items AS items
+					WHERE items.identity_namespace = ?
+						AND items.canonical_id = CAST(
+							json_extract(candidate.value, '$.externalId') AS TEXT
+						)
+				) AS item_id
+			FROM json_each(?) AS candidate
+		)
+		SELECT external_id, item_id FROM candidates
+	`).bind('rss:lookup', contentCandidates).all();
+	expect(contentItemLookup.results).toHaveLength(2);
+	// The cost scales with the two requested keys, not the 1000-row table cardinality.
+	expect(contentItemLookup.meta.rows_read).toBeLessThanOrEqual(6);
+
 	const identityPlan = await env.SCHEMA_DB.prepare(`
 		EXPLAIN QUERY PLAN
 		SELECT identity_value, item_id

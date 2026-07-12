@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import worker, { CLEANUP_CRON, scheduledTaskFor, UPDATE_CRON } from '../src/worker';
+import worker, {
+	CLEANUP_CRON,
+	scheduledTaskFor,
+	sourceMaintenanceStagesFor,
+	UPDATE_CRON,
+} from '../src/worker';
 
 describe('worker', () => {
 	it('serves a read-only health endpoint', async () => {
@@ -32,7 +37,19 @@ describe('worker', () => {
 		expect(scheduledTaskFor(CLEANUP_CRON)).toBe('cleanup');
 		expect(() => scheduledTaskFor('15 * * * *')).toThrow('Unsupported cron trigger');
 	});
+
+	it('spreads source maintenance across 15-minute boundaries', () => {
+		expect(stagesAt('04:00')).toEqual([]);
+		expect(stagesAt('04:01')).toEqual(['source_sync']);
+		expect(stagesAt('04:06')).toEqual(['source_recovery']);
+		expect(stagesAt('04:11')).toEqual(['readiness']);
+		expect(stagesAt('04:16')).toEqual(['source_sync']);
+	});
 });
+
+function stagesAt(time: string) {
+	return sourceMaintenanceStagesFor(Date.parse(`2026-07-10T${time}:00Z`));
+}
 
 function healthEnv(): Env {
 	return {

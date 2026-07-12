@@ -1,5 +1,3 @@
-import type { SourceDefinition } from '../domain/ingestion';
-
 export type SourceRuntimeStatus =
 	| 'backoff'
 	| 'blocked'
@@ -39,6 +37,11 @@ export interface SourceReadinessIssue {
 	reason: 'blocked' | 'dead' | 'never_succeeded' | 'stale';
 }
 
+export interface SourceQueueClaim {
+	sourceId: string;
+	queueToken: string;
+}
+
 interface RuntimeRow {
 	source_id: string;
 	adapter_key: string;
@@ -64,17 +67,27 @@ const MAX_ERROR_LENGTH = 1_000;
 export class SourceRuntimeStateRepository {
 	constructor(private readonly db: D1Database) {}
 
-	async syncSources(sources: SourceDefinition[], scheduledAt: number): Promise<void> {
-		const statements = sources.map((source) => this.db.prepare(`
+	async syncActiveSources(scheduledAt: number): Promise<number> {
+		const result = await this.db.prepare(`
 			INSERT INTO source_connector_state (
 				connector_id, state, next_run_at, created_at, updated_at
 			)
-			SELECT id, 'idle', ?, ?, ?
-			FROM source_connectors
-			WHERE connector_key = ? AND status = 'active'
+			SELECT connectors.id, 'idle', ?, ?, ?
+			FROM source_connectors AS connectors
+			JOIN sources ON sources.id = connectors.source_id
+			WHERE connectors.status = 'active'
+				AND sources.status = 'active'
+				AND EXISTS (
+					SELECT 1
+					FROM source_routes AS routes
+					JOIN destinations ON destinations.id = routes.destination_id
+					WHERE routes.source_id = sources.id
+						AND routes.status = 'active'
+						AND destinations.status = 'active'
+				)
 			ON CONFLICT (connector_id) DO NOTHING
-		`).bind(scheduledAt, scheduledAt, scheduledAt, source.sourceId));
-		if (statements.length > 0) await this.db.batch(statements);
+		`).bind(scheduledAt, scheduledAt, scheduledAt).run();
+		return result.meta.changes ?? 0;
 	}
 
 	async acquireLease(
@@ -92,9 +105,7 @@ export class SourceRuntimeStateRepository {
 				claim_expires_at = ?,
 				last_attempt_at = ?,
 				updated_at = ?
-			WHERE connector_id = (
-				SELECT id FROM source_connectors WHERE connector_key = ? AND status = 'active'
-			)
+			WHERE connector_id = (${activeConnectorIdSelect()})
 				AND (
 					state = 'idle'
 					OR (state = 'running' AND claim_expires_at <= ?)
@@ -139,10 +150,93 @@ export class SourceRuntimeStateRepository {
 			JOIN source_connectors AS connectors ON connectors.id = due.connector_id
 			JOIN sources ON sources.id = connectors.source_id
 			WHERE connectors.status = 'active' AND sources.status = 'active'
+				AND EXISTS (
+					SELECT 1
+					FROM source_routes AS routes
+					JOIN destinations ON destinations.id = routes.destination_id
+					WHERE routes.source_id = sources.id
+						AND routes.status = 'active'
+						AND destinations.status = 'active'
+				)
 			ORDER BY due.next_run_at, connectors.connector_key
 			LIMIT ?
 		`).bind(now, now, now, now, now, limit).all<{ source_id: string }>();
 		return result.results.map(({ source_id }) => source_id);
+	}
+
+	async claimDueSources(
+		now: number,
+		claimSeconds: number,
+		limit = 100,
+	): Promise<SourceQueueClaim[]> {
+		const result = await this.db.prepare(`
+			WITH due AS (
+				SELECT state.connector_id, state.next_run_at
+				FROM source_connector_state AS state
+				WHERE state.state = 'idle' AND state.next_run_at <= ?
+
+				UNION ALL
+
+				SELECT state.connector_id, state.next_run_at
+				FROM source_connector_state AS state
+				WHERE state.state = 'queued'
+					AND state.next_run_at <= ?
+					AND state.claim_expires_at <= ?
+
+				UNION ALL
+
+				SELECT state.connector_id, state.next_run_at
+				FROM source_connector_state AS state
+				WHERE state.state = 'running'
+					AND state.next_run_at <= ?
+					AND state.claim_expires_at <= ?
+			), active_due AS MATERIALIZED (
+				SELECT due.connector_id
+				FROM due
+				JOIN source_connectors AS connectors ON connectors.id = due.connector_id
+				JOIN sources ON sources.id = connectors.source_id
+				WHERE connectors.status = 'active' AND sources.status = 'active'
+					AND EXISTS (
+						SELECT 1
+						FROM source_routes AS routes
+						JOIN destinations ON destinations.id = routes.destination_id
+						WHERE routes.source_id = sources.id
+							AND routes.status = 'active'
+							AND destinations.status = 'active'
+					)
+				ORDER BY due.next_run_at, connectors.connector_key
+				LIMIT ?
+			)
+			UPDATE source_connector_state
+			SET
+				state = 'queued',
+				claim_token = lower(hex(randomblob(16))),
+				claimed_at = ?,
+				claim_expires_at = ?,
+				updated_at = ?
+			WHERE connector_id IN (SELECT connector_id FROM active_due)
+			RETURNING
+				(
+					SELECT connector_key
+					FROM source_connectors
+					WHERE id = source_connector_state.connector_id
+				) AS source_id,
+				claim_token AS queue_token
+		`).bind(
+			now,
+			now,
+			now,
+			now,
+			now,
+			limit,
+			now,
+			now + claimSeconds,
+			now,
+		).all<{ queue_token: string; source_id: string }>();
+		return result.results.map((row) => ({
+			sourceId: row.source_id,
+			queueToken: row.queue_token,
+		}));
 	}
 
 	async claimForQueue(
@@ -159,9 +253,7 @@ export class SourceRuntimeStateRepository {
 				claimed_at = ?,
 				claim_expires_at = ?,
 				updated_at = ?
-			WHERE connector_id = (
-				SELECT id FROM source_connectors WHERE connector_key = ? AND status = 'active'
-			)
+			WHERE connector_id = (${activeConnectorIdSelect()})
 				AND next_run_at <= ?
 				AND (
 					state = 'idle'
@@ -213,9 +305,7 @@ export class SourceRuntimeStateRepository {
 				claim_expires_at = ?,
 				last_attempt_at = ?,
 				updated_at = ?
-			WHERE connector_id = (
-				SELECT id FROM source_connectors WHERE connector_key = ? AND status = 'active'
-			)
+			WHERE connector_id = (${activeConnectorIdSelect()})
 				AND state = 'queued'
 				AND claim_token = ?
 				AND next_run_at <= ?
@@ -318,6 +408,33 @@ export class SourceRuntimeStateRepository {
 
 	async recoverBlockedSources(now: number, cooldownSeconds: number): Promise<number> {
 		return this.recover('blocked', now, cooldownSeconds, 'INGESTION_BLOCKED_RECOVERY');
+	}
+
+	async recoverEligibleSources(
+		now: number,
+		deadCooldownSeconds: number,
+		blockedCooldownSeconds: number,
+	): Promise<number> {
+		const result = await this.db.prepare(`
+			UPDATE source_connector_state
+			SET
+				state = 'idle',
+				next_run_at = ?,
+				last_error_code = CASE state
+					WHEN 'dead' THEN 'INGESTION_DLQ_RECOVERY'
+					ELSE 'INGESTION_BLOCKED_RECOVERY'
+				END,
+				last_error = 'Retrying source after recovery cooldown',
+				updated_at = ?
+			WHERE (state = 'dead' AND updated_at <= ?)
+				OR (state = 'blocked' AND updated_at <= ?)
+		`).bind(
+			now,
+			now,
+			now - deadCooldownSeconds,
+			now - blockedCooldownSeconds,
+		).run();
+		return result.meta.changes ?? 0;
 	}
 
 	async listReadinessIssues(
@@ -516,6 +633,25 @@ function runtimeSelect(): string {
 		FROM source_connector_state AS state
 		JOIN source_connectors AS connectors ON connectors.id = state.connector_id
 		JOIN sources ON sources.id = connectors.source_id
+	`;
+}
+
+function activeConnectorIdSelect(): string {
+	return `
+		SELECT connectors.id
+		FROM source_connectors AS connectors
+		JOIN sources ON sources.id = connectors.source_id
+		WHERE connectors.connector_key = ?
+			AND connectors.status = 'active'
+			AND sources.status = 'active'
+			AND EXISTS (
+				SELECT 1
+				FROM source_routes AS routes
+				JOIN destinations ON destinations.id = routes.destination_id
+				WHERE routes.source_id = sources.id
+					AND routes.status = 'active'
+					AND destinations.status = 'active'
+			)
 	`;
 }
 

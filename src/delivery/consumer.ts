@@ -111,12 +111,6 @@ async function consumeMessage(
 			throw new RetryableDeliveryError('Lost the delivery lease before marking sent', 'LEASE_LOST');
 		}
 
-		console.info({
-			event: 'telegram_delivery_sent',
-			deliveryId: lease.deliveryId,
-			sourceKey: lease.sourceKey,
-			attempt: lease.attemptCount,
-		});
 		message.ack();
 	} catch (error) {
 		await handleDeliveryFailure(message, config, repository, lease, error);

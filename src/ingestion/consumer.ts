@@ -18,9 +18,6 @@ export async function consumeIngestionBatch(
 	const deliveryRepository = new DeliveryRepository(env.DB);
 	const runtime = new SourceRuntimeStateRepository(env.DB);
 	const catalog = new D1SourceCatalog(env.DB, config);
-	const sources = await catalog.list();
-	validateRuntimeTopology(config, sources);
-	const sourcesById = new Map(sources.map((source) => [source.sourceId, source]));
 	const service = new IngestionService(
 		deliveryRepository,
 		defaultSourceAdapterRegistry(deliveryRepository),
@@ -34,9 +31,11 @@ export async function consumeIngestionBatch(
 		}
 
 		const job = message.body;
-		const source = sourcesById.get(job.sourceId);
+		const source = await catalog.get(job.sourceId);
+		validateRuntimeTopology(config, source ? [source] : []);
 		if (!source) {
 			console.warn({ event: 'stale_ingestion_job_source_missing', sourceId: job.sourceId });
+			await runtime.releaseQueueClaim(job.sourceId, job.queueToken, currentUnixTime());
 			message.ack();
 			continue;
 		}
@@ -70,12 +69,14 @@ export async function consumeIngestionBatch(
 			);
 			if (!marked) throw new Error(`Lost source runtime lease for ${job.sourceId}`);
 
-			console.info({
-				event: 'source_job_succeeded',
-				sourceId: job.sourceId,
-				discovered: result.discovered,
-				queueMessageId: message.id,
-			});
+			if (result.discovered > 0) {
+				console.info({
+					event: 'source_job_succeeded',
+					sourceId: job.sourceId,
+					discovered: result.discovered,
+					queueMessageId: message.id,
+				});
+			}
 			message.ack();
 		} catch (error) {
 			await handleIngestionFailure(

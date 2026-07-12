@@ -13,13 +13,24 @@ import {
 	consumeIngestionBatch,
 	consumeIngestionDeadLetterBatch,
 } from './ingestion/consumer';
-import { dispatchDueSources } from './ingestion/dispatcher';
+import {
+	dispatchDueSources,
+	recoverSourceRuntime,
+	syncSourceRuntime,
+} from './ingestion/dispatcher';
 import { runCleanup } from './maintenance/cleanup';
 
 export const UPDATE_CRON = '* * * * *';
 export const CLEANUP_CRON = '0 4 * * *';
 
 export type ScheduledTask = 'cleanup' | 'update';
+export type SourceMaintenanceStage = 'readiness' | 'source_recovery' | 'source_sync';
+
+const MINUTE_MS = 60_000;
+const SOURCE_MAINTENANCE_INTERVAL_MINUTES = 15;
+const SOURCE_SYNC_OFFSET_MINUTES = 1;
+const SOURCE_RECOVERY_OFFSET_MINUTES = 6;
+const READINESS_OFFSET_MINUTES = 11;
 
 export function scheduledTaskFor(cron: string): ScheduledTask {
 	if (cron === UPDATE_CRON) return 'update';
@@ -28,19 +39,32 @@ export function scheduledTaskFor(cron: string): ScheduledTask {
 	throw new Error(`Unsupported cron trigger: ${cron}`);
 }
 
+/**
+ * Spreads heavier source maintenance across the 15-minute cycle. Normal due-source
+ * dispatch still runs every minute, so existing 60-second poll intervals are unchanged.
+ */
+export function sourceMaintenanceStagesFor(scheduledTime: number): SourceMaintenanceStage[] {
+	const minute = Math.floor(scheduledTime / MINUTE_MS);
+	const offset = ((minute % SOURCE_MAINTENANCE_INTERVAL_MINUTES)
+		+ SOURCE_MAINTENANCE_INTERVAL_MINUTES) % SOURCE_MAINTENANCE_INTERVAL_MINUTES;
+	if (offset === SOURCE_SYNC_OFFSET_MINUTES) return ['source_sync'];
+	if (offset === SOURCE_RECOVERY_OFFSET_MINUTES) return ['source_recovery'];
+	if (offset === READINESS_OFFSET_MINUTES) return ['readiness'];
+	return [];
+}
+
 export default {
 	async scheduled(controller, env) {
 		const config = getConfig(env);
 		const task = scheduledTaskFor(controller.cron);
 
-		console.info({
-			event: 'scheduled_task_started',
-			cron: controller.cron,
-			scheduledTime: controller.scheduledTime,
-			task,
-		});
-
 		if (task === 'cleanup') {
+			console.info({
+				event: 'scheduled_task_started',
+				cron: controller.cron,
+				scheduledTime: controller.scheduledTime,
+				task,
+			});
 			await runCleanup(env, config);
 			return;
 		}
@@ -114,11 +138,25 @@ async function runUpdate(
 	scheduledTime: number,
 ): Promise<void> {
 	const failures: unknown[] = [];
-	for (const [stage, run] of [
+	const maintenance = new Set(sourceMaintenanceStagesFor(scheduledTime));
+	const stages: Array<readonly [string, () => Promise<unknown>]> = [
 		['delivery_dispatch', () => dispatchReadyDeliveries(env, config)],
-		['source_dispatch', () => dispatchDueSources(env, config, scheduledTime)],
-		['readiness', () => logSourceReadiness(env, config, Math.floor(scheduledTime / 1_000))],
-	] as const) {
+	];
+	if (maintenance.has('source_sync')) {
+		stages.push(['source_sync', () => syncSourceRuntime(env, scheduledTime)]);
+	}
+	if (maintenance.has('source_recovery')) {
+		stages.push(['source_recovery', () => recoverSourceRuntime(env, config, scheduledTime)]);
+	}
+	stages.push(['source_dispatch', () => dispatchDueSources(env, config, scheduledTime)]);
+	if (maintenance.has('readiness')) {
+		stages.push([
+			'readiness',
+			() => logSourceReadiness(env, config, Math.floor(scheduledTime / 1_000)),
+		]);
+	}
+
+	for (const [stage, run] of stages) {
 		try {
 			await run();
 		} catch (error) {

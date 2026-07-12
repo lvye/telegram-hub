@@ -19,6 +19,7 @@ describe('DeliveryRepository', () => {
 		await repository.upsertItems('twitter:status', 'telegram:TWITTER', [{
 			...item('rss-guid'),
 			identityAliases: ['twitter:123', 'https://x.com/OpenAI/status/123'],
+			metadata: { provider: 'rss' },
 		}], NOW, 'rss:twitter');
 
 		const existing = await repository.resolveExistingItems('twitter:status', [{
@@ -29,6 +30,16 @@ describe('DeliveryRepository', () => {
 			externalId: 'twitter:123',
 			itemId: expect.any(Number),
 		}]);
+		const identityKinds = await env.DB.prepare(`
+			SELECT identity_value, identity_kind
+			FROM item_identities
+			ORDER BY identity_value
+		`).all<{ identity_value: string; identity_kind: string }>();
+		expect(identityKinds.results).toEqual([
+			{ identity_value: 'https://x.com/OpenAI/status/123', identity_kind: 'url' },
+			{ identity_value: 'rss-guid', identity_kind: 'canonical' },
+			{ identity_value: 'twitter:123', identity_kind: 'provider_id' },
+		]);
 		await expect(repository.observeAndEnsureDeliveries(
 			'telegram:TWITTER',
 			existing,
@@ -39,9 +50,16 @@ describe('DeliveryRepository', () => {
 			SELECT
 				(SELECT COUNT(*) FROM content_items) AS items,
 				(SELECT COUNT(*) FROM message_deliveries) AS deliveries,
-				(SELECT COUNT(*) FROM item_observations) AS observations
+				(SELECT COUNT(*) FROM item_observations) AS observations,
+				(SELECT json_extract(metadata_json, '$.provider')
+					FROM item_observations) AS observation_provider
 		`).first();
-		expect(counts).toEqual({ items: 1, deliveries: 1, observations: 1 });
+		expect(counts).toEqual({
+			items: 1,
+			deliveries: 1,
+			observations: 1,
+			observation_provider: 'rss',
+		});
 	});
 
 	it('persists checkpoint pagination with compare-and-swap semantics', async () => {
@@ -77,6 +95,27 @@ describe('DeliveryRepository', () => {
 		expect(row).toEqual({ version: 1, cursor: 'next-page', pending_high_water_identity: 'twitter:200' });
 	});
 
+	it('skips a checkpoint write when progress has not changed', async () => {
+		const checkpoint = await repository.getOrCreateSourceProviderState(
+			'twitter:status', 'rss:twitter', NOW, 60, null,
+		);
+		await repository.updateSourceIngestionProgress(
+			'twitter:status',
+			'rss:twitter',
+			checkpoint,
+			{
+				highWaterExternalId: checkpoint.highWaterExternalId,
+				nextCursor: checkpoint.nextCursor,
+				pendingHighWaterExternalId: checkpoint.pendingHighWaterExternalId,
+			},
+			NOW + 1,
+		);
+		const row = await env.DB.prepare(`
+			SELECT version FROM source_connector_checkpoints
+		`).first();
+		expect(row).toEqual({ version: 0 });
+	});
+
 	it('rejects a candidate whose aliases resolve to different items', async () => {
 		await repository.upsertItems('rss:test', 'telegram:IT_HOME', [
 			{ ...item('one'), identityAliases: ['alias:one'] },
@@ -104,6 +143,47 @@ describe('DeliveryRepository', () => {
 		}]);
 	});
 
+	it('resolves ids across multiple content upsert chunks', async () => {
+		const candidates = Array.from(
+			{ length: 105 },
+			(_, index) => item(`chunked-canonical-${index}`),
+		);
+		await repository.upsertItems('rss:test', 'telegram:IT_HOME', candidates, NOW);
+
+		const counts = await env.DB.prepare(`
+			SELECT
+				(SELECT COUNT(*) FROM content_items) AS items,
+				(SELECT COUNT(*) FROM item_identities) AS identities,
+				(SELECT COUNT(*) FROM message_deliveries) AS deliveries
+		`).first();
+		expect(counts).toEqual({ items: 105, identities: 105, deliveries: 105 });
+	});
+
+	it('rolls back content and identity writes when a dependent write fails', async () => {
+		await repository.upsertItems('twitter:status', 'telegram:TWITTER', [
+			item('existing-observation'),
+		], NOW, 'rss:twitter');
+		await env.DB.prepare(`
+			UPDATE item_observations
+			SET provider_item_id = 'atomic-candidate'
+		`).run();
+
+		await expect(repository.upsertItems('twitter:status', 'telegram:TWITTER', [{
+			...item('atomic-candidate'),
+			identityAliases: ['alias:atomic-candidate'],
+		}], NOW + 1, 'rss:twitter')).rejects.toThrow();
+
+		const rolledBack = await env.DB.prepare(`
+			SELECT
+				(SELECT COUNT(*) FROM content_items
+					WHERE canonical_id = 'atomic-candidate') AS items,
+				(SELECT COUNT(*) FROM item_identities
+					WHERE identity_value IN ('atomic-candidate', 'alias:atomic-candidate')) AS identities,
+				(SELECT COUNT(*) FROM message_deliveries) AS deliveries
+		`).first();
+		expect(rolledBack).toEqual({ items: 0, identities: 0, deliveries: 1 });
+	});
+
 	it('isolates matching aliases by identity namespace', async () => {
 		await repository.upsertItems('rss:first', 'telegram:IT_HOME', [
 			{ ...item('first'), identityAliases: ['alias:shared'] },
@@ -123,7 +203,7 @@ describe('DeliveryRepository', () => {
 		expect(first?.itemId).not.toBe(second?.itemId);
 	});
 
-	it('throttles unchanged observation refreshes to once per hour', async () => {
+	it('throttles unchanged observation refreshes to once per day', async () => {
 		const candidate = { ...item('observed'), identityAliases: ['alias:observed'] };
 		await repository.upsertItems(
 			'twitter:status',
@@ -135,13 +215,13 @@ describe('DeliveryRepository', () => {
 		const resolved = await repository.resolveExistingItems('twitter:status', [candidate]);
 
 		await repository.observeAndEnsureDeliveries(
-			'telegram:TWITTER', resolved, NOW + 3_599, 'rss:twitter',
+			'telegram:TWITTER', resolved, NOW + 86_399, 'rss:twitter',
 		);
 		await expect(lastObservedAt()).resolves.toBe(NOW);
 		await repository.observeAndEnsureDeliveries(
-			'telegram:TWITTER', resolved, NOW + 3_600, 'rss:twitter',
+			'telegram:TWITTER', resolved, NOW + 86_400, 'rss:twitter',
 		);
-		await expect(lastObservedAt()).resolves.toBe(NOW + 3_600);
+		await expect(lastObservedAt()).resolves.toBe(NOW + 86_400);
 	});
 
 	it('does not reset a terminal delivery when an unchanged feed item repeats', async () => {

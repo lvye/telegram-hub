@@ -26,27 +26,20 @@ export class D1SourceCatalog implements SourceCatalog {
 		private readonly config: AppConfig,
 	) {}
 
+	async get(sourceId: string): Promise<SourceDefinition | null> {
+		const result = await this.db.prepare(`${sourceCatalogSelect()}
+				AND connectors.connector_key = ?
+			ORDER BY destinations.destination_key
+		`).bind(sourceId).all<ConnectorRow>();
+		if (result.results.length > 1) {
+			throw new Error(`Duplicate source ${sourceId}`);
+		}
+		const row = result.results[0];
+		return row ? this.sourceDefinition(row) : null;
+	}
+
 	async list(): Promise<SourceDefinition[]> {
-		const result = await this.db.prepare(`
-			SELECT
-				connectors.connector_key AS source_id,
-				connectors.adapter_key,
-				sources.identity_namespace,
-				destinations.destination_key,
-				connectors.poll_interval_seconds,
-				connectors.provider_key,
-				connectors.config_json,
-				COALESCE(checkpoints.initialized_at, sources.created_at) AS initialized_at
-			FROM source_connectors AS connectors
-			JOIN sources ON sources.id = connectors.source_id
-			JOIN source_routes AS routes ON routes.source_id = sources.id
-			JOIN destinations ON destinations.id = routes.destination_id
-			LEFT JOIN source_connector_checkpoints AS checkpoints
-				ON checkpoints.connector_id = connectors.id
-			WHERE connectors.status = 'active'
-				AND sources.status = 'active'
-				AND routes.status = 'active'
-				AND destinations.status = 'active'
+		const result = await this.db.prepare(`${sourceCatalogSelect()}
 			ORDER BY connectors.connector_key, destinations.destination_key
 		`).all<ConnectorRow>();
 
@@ -118,6 +111,30 @@ export class D1SourceCatalog implements SourceCatalog {
 			`Unsupported v2 connector ${row.source_id}: ${row.provider_key}/${row.adapter_key}`,
 		);
 	}
+}
+
+function sourceCatalogSelect(): string {
+	return `
+		SELECT
+			connectors.connector_key AS source_id,
+			connectors.adapter_key,
+			sources.identity_namespace,
+			destinations.destination_key,
+			connectors.poll_interval_seconds,
+			connectors.provider_key,
+			connectors.config_json,
+			COALESCE(checkpoints.initialized_at, sources.created_at) AS initialized_at
+		FROM source_connectors AS connectors
+		JOIN sources ON sources.id = connectors.source_id
+		JOIN source_routes AS routes ON routes.source_id = sources.id
+		JOIN destinations ON destinations.id = routes.destination_id
+		LEFT JOIN source_connector_checkpoints AS checkpoints
+			ON checkpoints.connector_id = connectors.id
+		WHERE connectors.status = 'active'
+			AND sources.status = 'active'
+			AND routes.status = 'active'
+			AND destinations.status = 'active'
+	`;
 }
 
 function nitterFeedUrl(baseUrl: string, userName: string): string {

@@ -113,7 +113,23 @@ async function runUpdate(
 	config: ReturnType<typeof getConfig>,
 	scheduledTime: number,
 ): Promise<void> {
-	await dispatchDueSources(env, config, scheduledTime);
-	await dispatchReadyDeliveries(env, config);
-	await logSourceReadiness(env, config, Math.floor(scheduledTime / 1_000));
+	const failures: unknown[] = [];
+	for (const [stage, run] of [
+		['delivery_dispatch', () => dispatchReadyDeliveries(env, config)],
+		['source_dispatch', () => dispatchDueSources(env, config, scheduledTime)],
+		['readiness', () => logSourceReadiness(env, config, Math.floor(scheduledTime / 1_000))],
+	] as const) {
+		try {
+			await run();
+		} catch (error) {
+			console.error({
+				event: 'scheduled_update_stage_failed',
+				stage,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			failures.push(error);
+		}
+	}
+	if (failures.length === 1) throw failures[0];
+	if (failures.length > 1) throw new AggregateError(failures, 'Scheduled update stages failed');
 }

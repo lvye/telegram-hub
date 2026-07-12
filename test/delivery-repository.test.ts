@@ -21,15 +21,17 @@ describe('DeliveryRepository', () => {
 			identityAliases: ['twitter:123', 'https://x.com/OpenAI/status/123'],
 		}], NOW, 'rss:twitter');
 
-		const existing = await repository.findExistingItemIdentities('twitter:status', [{
+		const existing = await repository.resolveExistingItems('twitter:status', [{
 			externalId: 'twitter:123',
 			identityAliases: ['https://x.com/OpenAI/status/123'],
 		}]);
-		expect(existing).toEqual(new Set(['twitter:123']));
-		await expect(repository.ensureDeliveriesForCandidates(
-			'twitter:status',
+		expect(existing).toEqual([{
+			externalId: 'twitter:123',
+			itemId: expect.any(Number),
+		}]);
+		await expect(repository.observeAndEnsureDeliveries(
 			'telegram:TWITTER',
-			[{ externalId: 'twitter:123', identityAliases: ['https://x.com/OpenAI/status/123'] }],
+			existing,
 			NOW + 1,
 			'rss:twitter',
 		)).resolves.toBe(0);
@@ -81,12 +83,65 @@ describe('DeliveryRepository', () => {
 			{ ...item('two'), identityAliases: ['alias:two'] },
 		], NOW);
 
-		await expect(repository.ensureDeliveriesForCandidates(
+		await expect(repository.resolveExistingItems(
 			'rss:test',
-			'telegram:IT_HOME',
 			[{ externalId: 'ambiguous', identityAliases: ['alias:one', 'alias:two'] }],
-			NOW,
 		)).rejects.toThrow('matched multiple items');
+	});
+
+	it('resolves large alias sets through bounded primary-key lookups', async () => {
+		const aliases = Array.from({ length: 105 }, (_, index) => `alias:${index}`);
+		await repository.upsertItems('rss:test', 'telegram:IT_HOME', [
+			{ ...item('chunked'), identityAliases: [aliases.at(-1)!] },
+		], NOW);
+
+		await expect(repository.resolveExistingItems('rss:test', [{
+			externalId: 'provider-guid',
+			identityAliases: aliases,
+		}])).resolves.toEqual([{
+			externalId: 'provider-guid',
+			itemId: expect.any(Number),
+		}]);
+	});
+
+	it('isolates matching aliases by identity namespace', async () => {
+		await repository.upsertItems('rss:first', 'telegram:IT_HOME', [
+			{ ...item('first'), identityAliases: ['alias:shared'] },
+		], NOW);
+		await repository.upsertItems('rss:second', 'telegram:IT_HOME', [
+			{ ...item('second'), identityAliases: ['alias:shared'] },
+		], NOW);
+
+		const [first] = await repository.resolveExistingItems('rss:first', [{
+			externalId: 'provider-first',
+			identityAliases: ['alias:shared'],
+		}]);
+		const [second] = await repository.resolveExistingItems('rss:second', [{
+			externalId: 'provider-second',
+			identityAliases: ['alias:shared'],
+		}]);
+		expect(first?.itemId).not.toBe(second?.itemId);
+	});
+
+	it('throttles unchanged observation refreshes to once per hour', async () => {
+		const candidate = { ...item('observed'), identityAliases: ['alias:observed'] };
+		await repository.upsertItems(
+			'twitter:status',
+			'telegram:TWITTER',
+			[candidate],
+			NOW,
+			'rss:twitter',
+		);
+		const resolved = await repository.resolveExistingItems('twitter:status', [candidate]);
+
+		await repository.observeAndEnsureDeliveries(
+			'telegram:TWITTER', resolved, NOW + 3_599, 'rss:twitter',
+		);
+		await expect(lastObservedAt()).resolves.toBe(NOW);
+		await repository.observeAndEnsureDeliveries(
+			'telegram:TWITTER', resolved, NOW + 3_600, 'rss:twitter',
+		);
+		await expect(lastObservedAt()).resolves.toBe(NOW + 3_600);
 	});
 
 	it('does not reset a terminal delivery when an unchanged feed item repeats', async () => {
@@ -100,6 +155,13 @@ describe('DeliveryRepository', () => {
 		await expect(repository.getState(deliveryId)).resolves.toMatchObject({ status: 'sent' });
 		await expect(repository.listDispatchable(NOW + 1)).resolves.toEqual([]);
 	});
+
+	async function lastObservedAt(): Promise<number | null> {
+		const row = await env.DB.prepare(`
+			SELECT last_observed_at FROM item_observations
+		`).first<{ last_observed_at: number }>();
+		return row?.last_observed_at ?? null;
+	}
 });
 
 function item(externalId: string): CanonicalItem {

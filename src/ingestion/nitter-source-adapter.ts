@@ -72,7 +72,7 @@ export class NitterUserSourceAdapter implements SourceAdapter<NitterUserAdapterC
 				&& item.publishedAt >= checkpoint.initializedAt
 				&& (source.config.includeReplies || !isNitterReply(item.title))
 			)),
-			itemLimit: null,
+			itemLimit: context.options.maxItemsPerSource,
 			checkpoint: {
 				commit: (updatedAt) => this.checkpoints.commit(
 					source.identityNamespace,

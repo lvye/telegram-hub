@@ -5,6 +5,7 @@ import type {
 } from '../domain/ingestion';
 import type { IngestionRepository } from '../persistence/ingestion-repository';
 import { SourceAdapterRegistry } from './source-adapter-registry';
+import { SourceIngestionLimitError } from './source-ingestion-limit-error';
 
 export interface SourceIngestionResult {
 	sourceId: string;
@@ -31,22 +32,45 @@ export class IngestionService {
 				runId,
 				scheduledAt,
 			});
-			validateBatch(batch, source.sourceId);
+			validateBatch(batch, source.sourceId, options.maxItemsPerSource);
+			if (batch.items.length > options.maxCandidatesPerSource) {
+				throw SourceIngestionLimitError.candidates(
+					source.sourceId,
+					batch.items.length,
+					options.maxCandidatesPerSource,
+				);
+			}
 			const uniqueItems = deduplicateItems(batch.items);
-			const existingIds = await this.repository.findExistingItemIdentities(
+			const identityAliases = new Set(uniqueItems.flatMap((item) => [
+				item.externalId,
+				...(item.identityAliases ?? []),
+			]));
+			if (identityAliases.size > options.maxIdentityAliasesPerSource) {
+				throw SourceIngestionLimitError.aliases(
+					source.sourceId,
+					identityAliases.size,
+					options.maxIdentityAliasesPerSource,
+				);
+			}
+			const resolvedItems = await this.repository.resolveExistingItems(
 				source.identityNamespace,
 				uniqueItems,
 			);
+			const resolvedByExternalId = new Map(resolvedItems.map((item) => [
+				item.externalId,
+				item,
+			]));
 			const unseenItems = uniqueItems
-				.filter((item) => !existingIds.has(item.externalId))
+				.filter((item) => !resolvedByExternalId.has(item.externalId))
 				.sort((left, right) => (left.publishedAt ?? 0) - (right.publishedAt ?? 0));
-			const items = batch.itemLimit === null
-				? unseenItems
-				: unseenItems.slice(0, batch.itemLimit);
-			const knownItems = uniqueItems.filter((item) => existingIds.has(item.externalId));
-			const deliveryCandidates = batch.itemLimit === null
-				? knownItems
-				: knownItems.slice(0, batch.itemLimit);
+			const items = unseenItems.slice(0, batch.itemLimit);
+			const knownItems = uniqueItems.filter((item) => (
+				resolvedByExternalId.has(item.externalId)
+			));
+			const resolvedDeliveryCandidates = knownItems.flatMap((item) => {
+				const resolved = resolvedByExternalId.get(item.externalId);
+				return resolved ? [resolved] : [];
+			});
 
 			await this.repository.upsertItems(
 				source.identityNamespace,
@@ -55,15 +79,17 @@ export class IngestionService {
 				scheduledAt,
 				source.sourceId,
 			);
-			const routedExisting = await this.repository.ensureDeliveriesForCandidates(
-				source.identityNamespace,
+			const routedExisting = await this.repository.observeAndEnsureDeliveries(
 				source.destinationKey,
-				deliveryCandidates,
+				resolvedDeliveryCandidates,
 				scheduledAt,
 				source.sourceId,
 			);
-			if (batch.checkpoint) {
+			const remainingUnseen = unseenItems.length - items.length;
+			let checkpointCommitted = false;
+			if (batch.checkpoint && remainingUnseen === 0) {
 				await batch.checkpoint.commit(scheduledAt);
+				checkpointCommitted = true;
 			}
 
 			console.info({
@@ -74,7 +100,9 @@ export class IngestionService {
 				adapterKey: source.adapterKey,
 				provider: batch.telemetry.provider,
 				discovered: items.length,
+				remainingUnseen,
 				routedExisting,
+				checkpointCommitted,
 				paginationComplete: batch.telemetry.paginationComplete,
 				paginationStopReason: batch.telemetry.paginationStopReason,
 				elapsedMs: Date.now() - startedAt,
@@ -114,15 +142,16 @@ export class IngestionService {
 function validateBatch(
 	batch: Awaited<ReturnType<SourceAdapterRegistry['load']>>,
 	sourceId: string,
+	maxItemsPerSource: number,
 ): void {
-	if (
-		batch.itemLimit !== null
-		&& (!Number.isInteger(batch.itemLimit) || batch.itemLimit <= 0)
-	) {
-		throw new Error(`Source ${sourceId} itemLimit must be a positive integer or null`);
+	if (!Number.isInteger(batch.itemLimit) || batch.itemLimit <= 0) {
+		throw new Error(`Source ${sourceId} itemLimit must be a positive integer`);
 	}
-	if (batch.checkpoint !== null && batch.itemLimit !== null) {
-		throw new Error(`Source ${sourceId} cannot combine itemLimit with a checkpoint`);
+	if (batch.itemLimit > maxItemsPerSource) {
+		throw new Error(
+			`Source ${sourceId} itemLimit ${batch.itemLimit} exceeds configured maximum `
+			+ maxItemsPerSource,
+		);
 	}
 }
 

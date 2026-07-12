@@ -6,6 +6,7 @@ import {
 } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getConfig } from '../src/config';
+import { dispatchReadyDeliveries } from '../src/delivery/dispatcher';
 import type { IngestionJob } from '../src/domain/ingestion';
 import { ingestionRetryDelaySeconds } from '../src/ingestion/consumer';
 import { D1SourceCatalog } from '../src/ingestion/source-catalog';
@@ -86,6 +87,26 @@ describe('ingestion queue consumer', () => {
 			status: 'blocked',
 			lastErrorCode: 'SOURCE_HTTP_404',
 		});
+	});
+
+	it('blocks an oversized candidate batch without retrying or persisting content', async () => {
+		const job = await claimedJob();
+		vi.mocked(globalThis.fetch).mockResolvedValue(rssItems(501));
+
+		const { result } = await dispatch(job);
+
+		expect(result.explicitAcks).toEqual(['ingestion-message-1']);
+		expect(result.retryMessages).toEqual([]);
+		expect(await runtime.get(SOURCE_ID)).toMatchObject({
+			status: 'blocked',
+			lastErrorCode: 'SOURCE_CANDIDATE_LIMIT_EXCEEDED',
+		});
+		const counts = await env.DB.prepare(`
+			SELECT
+				(SELECT COUNT(*) FROM content_items) AS items,
+				(SELECT COUNT(*) FROM message_deliveries) AS deliveries
+		`).first();
+		expect(counts).toEqual({ items: 0, deliveries: 0 });
 	});
 
 	it('acks a stale job token without fetching the source', async () => {
@@ -169,15 +190,25 @@ describe('ingestion queue consumer', () => {
 
 		await vi.waitFor(async () => {
 			expect(await runtime.get(SOURCE_ID)).toMatchObject({ status: 'idle' });
-			const delivery = await env.DB.prepare(`
-				SELECT message_deliveries.state AS status
-				FROM message_deliveries
-				JOIN content_items ON content_items.id = message_deliveries.item_id
-				WHERE content_items.canonical_id = 'native-queue-guid'
-			`).first<{ status: string }>();
+			const delivery = await deliveryState('native-queue-guid');
+			expect(delivery).toEqual({ status: 'pending' });
+		}, { timeout: 2_000, interval: 20 });
+
+		await dispatchReadyDeliveries(env, getConfig(env));
+		await vi.waitFor(async () => {
+			const delivery = await deliveryState('native-queue-guid');
 			expect(delivery).toEqual({ status: 'sent' });
 		}, { timeout: 2_000, interval: 20 });
 	});
+
+	async function deliveryState(canonicalId: string): Promise<{ status: string } | null> {
+		return env.DB.prepare(`
+			SELECT message_deliveries.state AS status
+			FROM message_deliveries
+			JOIN content_items ON content_items.id = message_deliveries.item_id
+			WHERE content_items.canonical_id = ?
+		`).bind(canonicalId).first<{ status: string }>();
+	}
 
 	async function claimedJob(claimSeconds = 300): Promise<IngestionJob> {
 		const config = getConfig(env);
@@ -230,4 +261,19 @@ function rss(guid: string): Response {
 			<pubDate>Fri, 10 Jul 2026 04:10:00 GMT</pubDate>
 		</item></channel></rss>
 	`, { headers: { 'content-type': 'application/rss+xml' } });
+}
+
+function rssItems(count: number): Response {
+	const items = Array.from({ length: count }, (_, index) => `
+		<item>
+			<guid>candidate-${index}</guid>
+			<title>Candidate ${index}</title>
+			<description>Candidate description</description>
+			<link>https://example.com/candidate-${index}</link>
+			<pubDate>Fri, 10 Jul 2026 04:10:00 GMT</pubDate>
+		</item>
+	`).join('');
+	return new Response(`<rss><channel>${items}</channel></rss>`, {
+		headers: { 'content-type': 'application/rss+xml' },
+	});
 }

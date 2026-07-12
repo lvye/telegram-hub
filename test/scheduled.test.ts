@@ -97,6 +97,23 @@ describe('scheduled handler', () => {
 		]);
 	});
 
+	it('dispatches pending deliveries even when the ingestion producer fails', async () => {
+		const repository = new DeliveryRepository(env.DB);
+		await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [ITEM], 1_000);
+		sendIngestionBatch.mockRejectedValueOnce(new Error('queue unavailable'));
+		const controller = createScheduledController({
+			cron: UPDATE_CRON,
+			scheduledTime: new Date('2026-07-10T04:00:00Z'),
+		});
+
+		await expect(worker.scheduled(controller, workerEnv)).rejects.toThrow('queue unavailable');
+		expect(sendDeliveryBatch).toHaveBeenCalledTimes(1);
+		const state = await env.DB.prepare(`
+			SELECT state FROM message_deliveries
+		`).first<{ state: string }>();
+		expect(state).toEqual({ state: 'queued' });
+	});
+
 	it('runs only compaction for the cleanup cron', async () => {
 		const repository = new DeliveryRepository(env.DB);
 		await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [ITEM], 1_000);

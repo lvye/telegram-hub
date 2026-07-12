@@ -19,7 +19,7 @@ export default defineConfig({
         },
         queueConsumers: {
           'source-ingestion': {
-            maxBatchSize: 10,
+            maxBatchSize: 1,
             maxBatchTimeout: 0.05,
             maxRetries: 5,
             deadLetterQueue: 'source-ingestion-dlq',

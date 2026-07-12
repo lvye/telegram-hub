@@ -27,6 +27,8 @@ const SOURCE: TwitterApiIoSourceConfig = {
 const OPTIONS: AppConfig['ingestion'] = {
 	feedTimeoutMs: 1_000,
 	maxFeedBytes: 100_000,
+	maxCandidatesPerSource: 500,
+	maxIdentityAliasesPerSource: 1_000,
 	maxItemsPerSource: 50,
 	leaseSeconds: 300,
 	queueClaimSeconds: 300,

@@ -99,12 +99,15 @@ describe('IngestionService', () => {
 		await expect(service.ingest(SOURCE, OPTIONS, NOW, 'run-1'))
 			.resolves.toMatchObject({ discovered: 50 });
 		expect(commit).not.toHaveBeenCalled();
+		await expect(persistedCounts()).resolves.toEqual({ items: 50, deliveries: 50 });
 		await expect(service.ingest(SOURCE, OPTIONS, NOW + 60, 'run-2'))
 			.resolves.toMatchObject({ discovered: 50 });
 		expect(commit).not.toHaveBeenCalled();
+		await expect(persistedCounts()).resolves.toEqual({ items: 100, deliveries: 100 });
 		await expect(service.ingest(SOURCE, OPTIONS, NOW + 120, 'run-3'))
 			.resolves.toMatchObject({ discovered: 20 });
 		expect(commit).toHaveBeenCalledWith(NOW + 120);
+		await expect(persistedCounts()).resolves.toEqual({ items: 120, deliveries: 120 });
 	});
 
 	it('routes every known checkpoint candidate before advancing the checkpoint', async () => {
@@ -210,6 +213,16 @@ describe('IngestionService', () => {
 			repository,
 			new SourceAdapterRegistry().register(adapter),
 		);
+	}
+
+	async function persistedCounts(): Promise<{ items: number; deliveries: number }> {
+		const counts = await env.DB.prepare(`
+			SELECT
+				(SELECT COUNT(*) FROM content_items) AS items,
+				(SELECT COUNT(*) FROM message_deliveries) AS deliveries
+		`).first<{ items: number; deliveries: number }>();
+		if (!counts) throw new Error('Missing persistence counts');
+		return counts;
 	}
 });
 

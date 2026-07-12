@@ -55,7 +55,7 @@ interface CheckpointRow {
 const UPSERT_CHUNK_SIZE = 9;
 const UPDATE_ID_CHUNK_SIZE = 98;
 const IDENTITY_LOOKUP_CHUNK_SIZE = 99;
-const OBSERVATION_REFRESH_SECONDS = 60 * 60;
+const OBSERVATION_REFRESH_SECONDS = 24 * 60 * 60;
 const MAX_ERROR_LENGTH = 1_000;
 
 export class DeliveryRepository implements IngestionRepository {
@@ -112,47 +112,71 @@ export class DeliveryRepository implements IngestionRepository {
 
 		const candidates = candidatePayload(items);
 		statements.push(this.db.prepare(`
-			INSERT OR IGNORE INTO item_identities (
+			WITH candidates AS MATERIALIZED (
+				SELECT
+					candidate.value,
+					CAST(json_extract(candidate.value, '$.externalId') AS TEXT) AS external_id,
+					(
+						SELECT items.id
+						FROM content_items AS items
+						WHERE items.identity_namespace = ?
+							AND items.canonical_id = CAST(
+								json_extract(candidate.value, '$.externalId') AS TEXT
+							)
+					) AS item_id
+				FROM json_each(?) AS candidate
+			)
+			INSERT INTO item_identities (
 				identity_namespace, identity_value, item_id, identity_kind, created_at
 			)
 			SELECT
 				?,
 				CAST(alias.value AS TEXT),
-				items.id,
+				candidates.item_id,
 				CASE
 					WHEN CAST(alias.value AS TEXT) LIKE 'http%' THEN 'url'
-					WHEN CAST(alias.value AS TEXT) = items.canonical_id THEN 'canonical'
+					WHEN CAST(alias.value AS TEXT) = candidates.external_id
+						THEN 'canonical'
 					ELSE 'provider_id'
 				END,
 				?
-			FROM json_each(?) AS candidate
-			JOIN json_each(candidate.value, '$.aliases') AS alias
-			JOIN content_items AS items
-				ON items.identity_namespace = ?
-				AND items.canonical_id = CAST(json_extract(candidate.value, '$.externalId') AS TEXT)
+			FROM candidates
+			JOIN json_each(candidates.value, '$.aliases') AS alias
 			WHERE alias.type = 'text' AND length(trim(CAST(alias.value AS TEXT))) > 0
-		`).bind(identityNamespace, now, candidates, identityNamespace));
+			ON CONFLICT (identity_namespace, identity_value) DO NOTHING
+		`).bind(identityNamespace, candidates, identityNamespace, now));
 
 		if (sourceId) {
 			statements.push(this.db.prepare(`
+				WITH candidates AS MATERIALIZED (
+					SELECT
+						CAST(json_extract(candidate.value, '$.externalId') AS TEXT) AS external_id,
+						CAST(json_extract(candidate.value, '$.metadataJson') AS TEXT) AS metadata_json,
+						(
+							SELECT items.id
+							FROM content_items AS items
+							WHERE items.identity_namespace = ?
+								AND items.canonical_id = CAST(
+									json_extract(candidate.value, '$.externalId') AS TEXT
+								)
+						) AS item_id
+					FROM json_each(?) AS candidate
+				)
 				INSERT INTO item_observations (
 					connector_id, item_id, provider_item_id,
 					first_observed_at, last_observed_at, metadata_json
 				)
 				SELECT
 					connectors.id,
-					items.id,
-					items.canonical_id,
-					?, ?, items.metadata_json
-				FROM json_each(?) AS candidate
-				JOIN content_items AS items
-					ON items.identity_namespace = ?
-					AND items.canonical_id = CAST(json_extract(candidate.value, '$.externalId') AS TEXT)
+					candidates.item_id,
+					candidates.external_id,
+					?, ?, candidates.metadata_json
+				FROM candidates
 				JOIN source_connectors AS connectors ON connectors.connector_key = ?
 				ON CONFLICT (connector_id, item_id) DO UPDATE SET
 					last_observed_at = excluded.last_observed_at,
 					metadata_json = excluded.metadata_json
-			`).bind(now, now, candidates, identityNamespace, sourceId));
+			`).bind(identityNamespace, candidates, now, now, sourceId));
 		}
 
 		statements.push(this.insertDeliveriesStatement(
@@ -333,6 +357,12 @@ export class DeliveryRepository implements IngestionRepository {
 		progress: TwitterApiIoCheckpointProgress,
 		now = currentUnixTime(),
 	): Promise<void> {
+		if (
+			progress.highWaterExternalId === previous.highWaterExternalId
+			&& progress.nextCursor === previous.nextCursor
+			&& progress.pendingHighWaterExternalId === previous.pendingHighWaterExternalId
+		) return;
+
 		const result = await this.db.prepare(`
 			UPDATE source_connector_checkpoints
 			SET
@@ -655,39 +685,46 @@ export class DeliveryRepository implements IngestionRepository {
 		sourceId?: string,
 	): D1PreparedStatement {
 		return this.db.prepare(`
+			WITH candidates AS MATERIALIZED (
+				SELECT (
+					SELECT items.id
+					FROM content_items AS items
+					WHERE items.identity_namespace = ?
+						AND items.canonical_id = CAST(
+							json_extract(candidate.value, '$.externalId') AS TEXT
+						)
+				) AS item_id
+				FROM json_each(?) AS candidate
+			)
 			INSERT OR IGNORE INTO message_deliveries (
 				item_id, destination_id, trigger_source_id,
 				state, next_attempt_at, created_at, updated_at
 			)
 			SELECT
-				items.id,
+				candidates.item_id,
 				destinations.id,
 				connectors.source_id,
 				'pending', ?, ?, ?
-			FROM json_each(?) AS candidate
-			JOIN content_items AS items
-				ON items.identity_namespace = ?
-				AND items.canonical_id = CAST(json_extract(candidate.value, '$.externalId') AS TEXT)
+			FROM candidates
 			JOIN destinations ON destinations.destination_key = ?
 			LEFT JOIN source_connectors AS connectors ON connectors.connector_key = ?
 		`).bind(
-			now,
-			now,
-			now,
-			candidates,
 			identityNamespace,
+			candidates,
+			now,
+			now,
+			now,
 			normalizeDestinationKey(destinationKey),
 			sourceId ?? null,
 		);
 	}
 }
 
-function candidatePayload(
-	items: Array<Pick<CanonicalItem, 'externalId' | 'identityAliases'>>,
-): string {
+function candidatePayload(items: CanonicalItem[]): string {
 	return JSON.stringify(items.map((item) => ({
 		externalId: item.externalId,
 		aliases: [...new Set([item.externalId, ...(item.identityAliases ?? [])])],
+		metadataJson: JSON.stringify(item.metadata ?? {}),
 	})));
 }
 

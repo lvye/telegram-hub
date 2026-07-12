@@ -33,7 +33,7 @@ Worker 仅保留只读的 `GET /health` 和 `GET /health/ready`。readiness 会�
 
 - ES Module Worker + TypeScript，binding 类型由 `wrangler types` 生成
 - 同一个 Worker 同时处理 `scheduled()`、`queue()` 和只读 `fetch()`
-- Source Runtime 将 `sourceId`、adapter、identity namespace 和 destination 分离；Cron 只通过 Catalog 与 adapter registry 调度来源
+- Source Runtime 将 `sourceId`、adapter、identity namespace 和 destination 分离；Cron 直接在运行状态表中原子 claim 到期来源，Queue consumer 再通过 Catalog 点查单个来源并交给 adapter registry
 - `source_connector_state` 保存 provider-neutral 的 cadence、租约、连续失败和下次轮询状态；`source_connector_checkpoints` 保存 provider checkpoint
 - Cron 只按 `next_poll_at` 产生一个 source 一个 job；Ingestion Queue consumer 用 queue token 和 source lease 吸收重复或过期消息
 - 来源 429/5xx 同时遵守 `Retry-After`、指数退避和 jitter；永久 4xx 进入 `blocked`，原生 ingestion DLQ 耗尽后写入 `dead`，两者在不同冷却期后自动探测恢复
@@ -46,13 +46,13 @@ Worker 仅保留只读的 `GET /health` 和 `GET /health/ready`。readiness 会�
 - 每个来源单轮最多接受 500 个原始候选和 1,000 个去重 identity alias；超限会标记为 `blocked`，避免无界结果持续消耗 D1 与 Queue
 - 每轮最多持久化 50 个未见内容；带 checkpoint 的来源会在多轮排空 backlog 后才提交 checkpoint，不会因窗口限制跳过内容
 - 已见 identity 通过 `(identity_namespace, identity_value)` 主键分块点查并复用解析结果，不再反复联结整张 identity 表
-- 重复 Feed 对 `content_items/message_deliveries` 零写入，`item_observations` 最多每小时刷新一次
+- 重复 Feed 对 `content_items/message_deliveries` 零写入，`item_observations` 最多每天刷新一次
 - 使用 `(item_id, destination_key)` 独立跟踪每次投递
 - D1 lease 支持中断后的安全重领
 - Telegram 429 使用 Queue `delaySeconds` 重试，不在 Worker 中长时间 sleep
 - 永久业务错误直接记录为 `dead`；未被 consumer 正常处理的消息由 Cloudflare 原生 DLQ 接管，未耗尽应用尝试时恢复为 `retry`
 - 批量 D1 写入控制在 Workers Free 计划单次调用的查询预算内
-- Ingestion Queue 每次只消费一个来源任务；delivery 统一由每分钟 Cron 调度，避免多 consumer 重复扫描和竞争入队
+- Ingestion Queue 每次只消费一个来源任务；delivery 统一由每分钟 Cron 调度，来源同步、故障恢复和 readiness 每 15 分钟错峰执行，避免全量 Catalog 解析和多 consumer 竞争入队
 - `@cloudflare/vitest-pool-workers` 在真实 workerd 环境中测试 D1、Cron 和 Queue
 
 ## 项目结构

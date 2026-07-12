@@ -84,7 +84,6 @@ function validateAndCleanImageUrl(url: string, itemGuid: string): string | null 
 			return null;
 		}
 
-		console.info({ event: 'image_url_extracted', itemId: itemGuid, url: cleanUrl });
 		return cleanUrl;
 	} catch (error) {
 		console.error({

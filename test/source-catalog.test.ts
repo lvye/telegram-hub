@@ -75,7 +75,74 @@ describe('D1SourceCatalog', () => {
 			config: { url: 'https://example.com/rss', parser: 'it-home', identityStrategy: 'external-id' },
 		});
 
-		await expect(new D1SourceCatalog(env.DB, getConfig(env)).list()).resolves.toEqual([]);
+		const catalog = new D1SourceCatalog(env.DB, getConfig(env));
+		await expect(catalog.list()).resolves.toEqual([]);
+		await expect(catalog.get('rss:paused')).resolves.toBeNull();
+	});
+
+	it('loads one connector by id without decoding unrelated connector configuration', async () => {
+		await seedConnector({
+			sourceKey: 'rss:it-home',
+			sourceType: 'rss_feed',
+			identityNamespace: 'rss:it-home',
+			connectorKey: 'rss:it_home',
+			providerKey: 'rss',
+			adapterKey: 'rss',
+			pollSeconds: 60,
+			config: {
+				url: 'https://www.ithome.com/rss/',
+				parser: 'it-home',
+				identityStrategy: 'external-id',
+			},
+		});
+		await seedConnector({
+			sourceKey: 'twitter:user:openai',
+			sourceType: 'twitter_user',
+			identityNamespace: 'twitter:status',
+			connectorKey: 'twitterapi-io:subscription:5',
+			providerKey: 'twitterapi-io',
+			adapterKey: 'twitterapi-io.user-timeline',
+			pollSeconds: 300,
+			config: {
+				endpoint: 'https://api.twitterapi.io/twitter/user/last_tweets',
+				userName: 'OpenAI', includeReplies: false, maxPages: 1,
+			},
+		});
+
+		const catalog = new D1SourceCatalog(env.DB, getConfig(env));
+		await expect(catalog.get('rss:it_home')).resolves.toMatchObject({
+			sourceId: 'rss:it_home',
+			adapterKey: 'rss',
+		});
+		await expect(catalog.get('rss:missing')).resolves.toBeNull();
+	});
+
+	it('rejects duplicate active routes in a point lookup', async () => {
+		await seedConnector({
+			sourceKey: 'rss:it-home',
+			sourceType: 'rss_feed',
+			identityNamespace: 'rss:it-home',
+			connectorKey: 'rss:it_home',
+			providerKey: 'rss',
+			adapterKey: 'rss',
+			pollSeconds: 60,
+			config: {
+				url: 'https://www.ithome.com/rss/',
+				parser: 'it-home',
+				identityStrategy: 'external-id',
+			},
+		});
+		await seedDestination(env.DB, 'telegram:IT_HOME', NOW);
+		await env.DB.prepare(`
+			INSERT INTO source_routes (source_id, destination_id, status, created_at, updated_at)
+			SELECT sources.id, destinations.id, 'active', ?, ?
+			FROM sources, destinations
+			WHERE sources.source_key = 'rss:it-home'
+				AND destinations.destination_key = 'telegram:it-home'
+		`).bind(NOW, NOW).run();
+
+		await expect(new D1SourceCatalog(env.DB, getConfig(env)).get('rss:it_home'))
+			.rejects.toThrow('Duplicate source rss:it_home');
 	});
 
 	it('requires the API secret only for an active TwitterAPI.io connector', async () => {

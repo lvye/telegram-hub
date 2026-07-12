@@ -25,7 +25,7 @@ The Worker only exposes read-only `GET /health` and `GET /health/ready` endpoint
 - One Worker handles `scheduled()`, `queue()`, and read-only `fetch()` events
 - A Source Runtime separates source instances, adapters, identity namespaces, and delivery destinations
 - `source_connector_state` stores provider-neutral cadence, leases, consecutive failures, and next-poll state; `source_connector_checkpoints` stores provider checkpoints
-- Cron emits one job per due source; the ingestion consumer uses queue tokens and source leases to reject duplicate or expired jobs
+- Cron atomically claims due sources from runtime state; the ingestion consumer point-loads only the claimed Catalog entry and uses queue tokens and source leases to reject duplicate or expired jobs
 - Source 429/5xx failures combine `Retry-After`, exponential backoff, and jitter; permanent 4xx failures become `blocked`, exhausted ingestion DLQ jobs become `dead`, and both probe recovery after separate cooldowns
 - RSS and TwitterAPI.io adapters emit provider-neutral `CanonicalItem` batches; one ingestion service owns deduplication, persistence, and checkpoint commits
 - Telegram chat IDs, parse mode, and message format live in destination configuration rather than discovery sources
@@ -36,12 +36,12 @@ The Worker only exposes read-only `GET /health` and `GET /health/ready` endpoint
 - Each source run accepts at most 500 raw candidates and 1,000 deduplicated identity aliases; oversized batches mark the source `blocked` instead of consuming D1 and Queue resources without a bound
 - Each run persists at most 50 unseen items; checkpointed providers commit only after their backlog drains across bounded windows, so the window cannot skip content
 - Known identities use chunked primary-key lookups on `(identity_namespace, identity_value)` and reuse the resolved item IDs instead of repeatedly joining the full identity table
-- Repeated feeds do not rewrite `content_items/message_deliveries`, and `item_observations` refresh at most once per hour
+- Repeated feeds do not rewrite `content_items/message_deliveries`, and `item_observations` refresh at most once per day
 - Per-destination delivery state and recoverable D1 leases
 - Queue-delayed retries for retryable Telegram responses; permanent API errors go directly to `dead`
 - Native Cloudflare DLQ reconciliation; non-exhausted application work returns to `retry`
 - Batched D1 statements stay within the per-invocation query budget of Workers Free
-- The ingestion Queue consumes one source job per invocation; the minute Cron is the single delivery dispatcher, avoiding redundant scans and competing enqueue attempts
+- The ingestion Queue consumes one source job per invocation; the minute Cron is the single delivery dispatcher, while source sync, recovery, and readiness are staggered across a 15-minute cycle to avoid full Catalog decoding and competing enqueue attempts
 - D1, Cron, Queue, and HTTP tests run inside workerd
 
 ## Layout

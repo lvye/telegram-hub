@@ -9,7 +9,6 @@ import { getConfig } from '../src/config';
 import { dispatchReadyDeliveries } from '../src/delivery/dispatcher';
 import type { IngestionJob } from '../src/domain/ingestion';
 import { ingestionRetryDelaySeconds } from '../src/ingestion/consumer';
-import { D1SourceCatalog } from '../src/ingestion/source-catalog';
 import { SourceRuntimeStateRepository } from '../src/persistence/source-runtime-state-repository';
 import worker from '../src/worker';
 import { resetDatabase, seedDefaultTopology } from './d1-fixtures';
@@ -45,6 +44,50 @@ describe('ingestion queue consumer', () => {
 			FROM content_items WHERE identity_namespace = 'rss:it-home'
 		`).first<{ external_id: string }>();
 		expect(item).toEqual({ external_id: 'queued-guid' });
+	});
+
+	it('loads only the queued source configuration', async () => {
+		const job = await claimedJob();
+		await env.DB.prepare(`
+			UPDATE source_connectors
+			SET
+				provider_key = 'twitterapi-io',
+				adapter_key = 'twitterapi-io.user-timeline',
+				config_json = ?
+			WHERE connector_key = 'rss:twitter'
+		`).bind(JSON.stringify({
+			endpoint: 'https://api.twitterapi.io/twitter/user/last_tweets',
+			includeReplies: false,
+			maxPages: 1,
+			userName: 'OpenAI',
+		})).run();
+		vi.mocked(globalThis.fetch).mockResolvedValue(rss('point-lookup-guid'));
+
+		const { result } = await dispatch(job);
+
+		expect(result.explicitAcks).toEqual(['ingestion-message-1']);
+		expect(await runtime.get(SOURCE_ID)).toMatchObject({ status: 'idle' });
+	});
+
+	it('acks a queued job whose route was paused and releases its claim', async () => {
+		const job = await claimedJob();
+		await env.DB.prepare(`
+			UPDATE source_routes
+			SET status = 'paused'
+			WHERE source_id = (
+				SELECT source_id FROM source_connectors WHERE connector_key = ?
+			)
+		`).bind(SOURCE_ID).run();
+
+		const { result } = await dispatch(job);
+
+		expect(result.explicitAcks).toEqual(['ingestion-message-1']);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(await runtime.get(SOURCE_ID)).toMatchObject({
+			status: 'idle',
+			queueToken: null,
+		});
+		await expect(runtime.listDueSourceIds(NOW)).resolves.not.toContain(SOURCE_ID);
 	});
 
 	it('uses Retry-After and keeps the same queue token for a delayed retry', async () => {
@@ -211,9 +254,7 @@ describe('ingestion queue consumer', () => {
 	}
 
 	async function claimedJob(claimSeconds = 300): Promise<IngestionJob> {
-		const config = getConfig(env);
-		const sources = await new D1SourceCatalog(env.DB, config).list();
-		await runtime.syncSources(sources, NOW);
+		await runtime.syncActiveSources(NOW);
 		const queueToken = crypto.randomUUID();
 		await runtime.claimForQueue(SOURCE_ID, queueToken, NOW, claimSeconds);
 		return { version: 1, sourceId: SOURCE_ID, queueToken, scheduledAt: NOW };

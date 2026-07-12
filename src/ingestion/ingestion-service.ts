@@ -92,21 +92,28 @@ export class IngestionService {
 				checkpointCommitted = true;
 			}
 
-			console.info({
-				event: 'source_ingested',
-				runId,
-				sourceId: source.sourceId,
-				sourceKey: source.identityNamespace,
-				adapterKey: source.adapterKey,
-				provider: batch.telemetry.provider,
-				discovered: items.length,
-				remainingUnseen,
-				routedExisting,
-				checkpointCommitted,
-				paginationComplete: batch.telemetry.paginationComplete,
-				paginationStopReason: batch.telemetry.paginationStopReason,
-				elapsedMs: Date.now() - startedAt,
-			});
+			if (
+				items.length > 0
+				|| remainingUnseen > 0
+				|| routedExisting > 0
+				|| batch.telemetry.paginationComplete === false
+			) {
+				console.info({
+					event: 'source_ingested',
+					runId,
+					sourceId: source.sourceId,
+					sourceKey: source.identityNamespace,
+					adapterKey: source.adapterKey,
+					provider: batch.telemetry.provider,
+					discovered: items.length,
+					remainingUnseen,
+					routedExisting,
+					checkpointCommitted,
+					paginationComplete: batch.telemetry.paginationComplete,
+					paginationStopReason: batch.telemetry.paginationStopReason,
+					elapsedMs: Date.now() - startedAt,
+				});
+			}
 			if (batch.telemetry.initialization) {
 				console.info({
 					event: 'source_provider_initialized',

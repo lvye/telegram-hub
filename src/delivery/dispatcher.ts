@@ -21,10 +21,12 @@ export async function dispatchReadyDeliveries(env: Env, config: AppConfig): Prom
 		await repository.markQueued(chunk.map(({ deliveryId }) => deliveryId));
 	}
 
-	console.info({
-		event: 'deliveries_dispatched',
-		count: dispatchable.length,
-	});
+	if (dispatchable.length > 0) {
+		console.info({
+			event: 'deliveries_dispatched',
+			count: dispatchable.length,
+		});
+	}
 
 	return dispatchable.length;
 }

@@ -20,6 +20,7 @@ export interface SourceDefinition<TConfig = unknown> {
 }
 
 export interface SourceCatalog {
+	get(sourceId: string): Promise<SourceDefinition | null>;
 	list(): Promise<SourceDefinition[]>;
 }
 

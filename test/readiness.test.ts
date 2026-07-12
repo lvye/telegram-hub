@@ -1,7 +1,6 @@
 import { env } from 'cloudflare:workers';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getConfig } from '../src/config';
-import { D1SourceCatalog } from '../src/ingestion/source-catalog';
 import { SourceRuntimeStateRepository } from '../src/persistence/source-runtime-state-repository';
 import worker from '../src/worker';
 import { resetDatabase, seedDefaultTopology } from './d1-fixtures';
@@ -69,9 +68,7 @@ describe('source readiness', () => {
 	});
 
 	async function syncSources() {
-		const config = getConfig(workerEnv());
-		const sources = await new D1SourceCatalog(env.DB, config).list();
-		await runtime.syncSources(sources, NOW);
+		await runtime.syncActiveSources(NOW);
 	}
 });
 

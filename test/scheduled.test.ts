@@ -2,8 +2,9 @@ import { env } from 'cloudflare:workers';
 import { createScheduledController } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getConfig } from '../src/config';
-import type { CanonicalItem } from '../src/domain/ingestion';
+import type { CanonicalItem, IngestionJob } from '../src/domain/ingestion';
 import { DeliveryRepository } from '../src/persistence/delivery-repository';
+import { SourceRuntimeStateRepository } from '../src/persistence/source-runtime-state-repository';
 import worker, { CLEANUP_CRON, UPDATE_CRON } from '../src/worker';
 import { resetDatabase, seedDefaultTopology } from './d1-fixtures';
 
@@ -52,7 +53,7 @@ describe('scheduled handler', () => {
 	it('enqueues one job per due source without fetching in the cron invocation', async () => {
 		const controller = createScheduledController({
 			cron: UPDATE_CRON,
-			scheduledTime: new Date('2026-07-10T04:00:00Z'),
+			scheduledTime: new Date('2026-07-10T04:01:00Z'),
 		});
 
 		await worker.scheduled(controller, workerEnv);
@@ -81,7 +82,7 @@ describe('scheduled handler', () => {
 		sendIngestionBatch.mockRejectedValueOnce(new Error('queue unavailable'));
 		const controller = createScheduledController({
 			cron: UPDATE_CRON,
-			scheduledTime: new Date('2026-07-10T04:00:00Z'),
+			scheduledTime: new Date('2026-07-10T04:01:00Z'),
 		});
 
 		await expect(worker.scheduled(controller, workerEnv)).rejects.toThrow('queue unavailable');
@@ -103,7 +104,7 @@ describe('scheduled handler', () => {
 		sendIngestionBatch.mockRejectedValueOnce(new Error('queue unavailable'));
 		const controller = createScheduledController({
 			cron: UPDATE_CRON,
-			scheduledTime: new Date('2026-07-10T04:00:00Z'),
+			scheduledTime: new Date('2026-07-10T04:01:00Z'),
 		});
 
 		await expect(worker.scheduled(controller, workerEnv)).rejects.toThrow('queue unavailable');
@@ -112,6 +113,55 @@ describe('scheduled handler', () => {
 			SELECT state FROM message_deliveries
 		`).first<{ state: string }>();
 		expect(state).toEqual({ state: 'queued' });
+	});
+
+	it('does not scan or initialize the source catalog on an ordinary minute', async () => {
+		const controller = createScheduledController({
+			cron: UPDATE_CRON,
+			scheduledTime: new Date('2026-07-10T04:02:00Z'),
+		});
+
+		await worker.scheduled(controller, workerEnv);
+
+		expect(sendIngestionBatch).not.toHaveBeenCalled();
+		const state = await env.DB.prepare(`
+			SELECT COUNT(*) AS count FROM source_connector_state
+		`).first<{ count: number }>();
+		expect(state).toEqual({ count: 0 });
+	});
+
+	it('keeps initialized one-minute sources dispatchable every minute', async () => {
+		const firstScheduledTime = Date.parse('2026-07-10T04:01:00Z');
+		await worker.scheduled(createScheduledController({
+			cron: UPDATE_CRON,
+			scheduledTime: new Date(firstScheduledTime),
+		}), workerEnv);
+		const firstBatch = sendIngestionBatch.mock.calls[0][0] as Array<{ body: IngestionJob }>;
+		const runtime = new SourceRuntimeStateRepository(env.DB);
+		for (const { body } of firstBatch) {
+			const leaseToken = `lease:${body.sourceId}`;
+			await expect(runtime.acquireQueuedLease(
+				body.sourceId,
+				body.queueToken,
+				leaseToken,
+				firstScheduledTime / 1_000,
+				300,
+			)).resolves.toBe(true);
+			await expect(runtime.markSucceeded(
+				body.sourceId,
+				leaseToken,
+				firstScheduledTime / 1_000 + 60,
+				firstScheduledTime / 1_000,
+			)).resolves.toBe(true);
+		}
+
+		await worker.scheduled(createScheduledController({
+			cron: UPDATE_CRON,
+			scheduledTime: new Date(firstScheduledTime + 60_000),
+		}), workerEnv);
+
+		expect(sendIngestionBatch).toHaveBeenCalledTimes(2);
+		expect(sendIngestionBatch.mock.calls[1][0]).toHaveLength(2);
 	});
 
 	it('runs only compaction for the cleanup cron', async () => {

@@ -227,13 +227,26 @@ describe('DeliveryRepository', () => {
 	it('does not reset a terminal delivery when an unchanged feed item repeats', async () => {
 		const candidate = item('terminal');
 		await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [candidate], NOW);
-		const [{ deliveryId }] = await repository.listDispatchable(NOW);
+		const [deliveryId] = await repository.claimDispatchable(NOW);
 		await repository.acquireLease(deliveryId, 'lease', NOW);
 		await repository.markSent(deliveryId, 'lease', 'message-1', NOW);
 
 		await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [candidate], NOW + 1);
 		await expect(repository.getState(deliveryId)).resolves.toMatchObject({ status: 'sent' });
-		await expect(repository.listDispatchable(NOW + 1)).resolves.toEqual([]);
+		await expect(repository.claimDispatchable(NOW + 1)).resolves.toEqual([]);
+	});
+
+	it('claims dispatchable deliveries exactly once and releases failed claims', async () => {
+		await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [item('claim-once')], NOW);
+
+		const claimed = await repository.claimDispatchable(NOW);
+		expect(claimed).toHaveLength(1);
+		await expect(repository.getState(claimed[0])).resolves.toMatchObject({ status: 'queued' });
+		await expect(repository.claimDispatchable(NOW)).resolves.toEqual([]);
+
+		await repository.releaseDispatchClaims(claimed, NOW);
+		await expect(repository.getState(claimed[0])).resolves.toMatchObject({ status: 'ready' });
+		await expect(repository.claimDispatchable(NOW)).resolves.toEqual(claimed);
 	});
 
 	async function lastObservedAt(): Promise<number | null> {

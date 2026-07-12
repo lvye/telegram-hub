@@ -6,27 +6,40 @@ const QUEUE_SEND_LIMIT = 100;
 
 export async function dispatchReadyDeliveries(env: Env, config: AppConfig): Promise<number> {
 	const repository = new DeliveryRepository(env.DB);
-	const dispatchable = await repository.listDispatchable(
+	const claimed = await repository.claimDispatchable(
 		undefined,
 		config.delivery.dispatchBatchSize,
 	);
 
-	for (let offset = 0; offset < dispatchable.length; offset += QUEUE_SEND_LIMIT) {
-		const chunk = dispatchable.slice(offset, offset + QUEUE_SEND_LIMIT);
-		const jobs = chunk.map(({ deliveryId }) => ({
-			body: { version: 1, deliveryId } satisfies DeliveryJob,
-		}));
-
-		await env.TELEGRAM_DELIVERY_QUEUE.sendBatch(jobs);
-		await repository.markQueued(chunk.map(({ deliveryId }) => deliveryId));
+	let offset = 0;
+	try {
+		while (offset < claimed.length) {
+			const chunk = claimed.slice(offset, offset + QUEUE_SEND_LIMIT);
+			await env.TELEGRAM_DELIVERY_QUEUE.sendBatch(chunk.map((deliveryId) => ({
+				body: { version: 1, deliveryId } satisfies DeliveryJob,
+			})));
+			offset += chunk.length;
+		}
+	} catch (error) {
+		try {
+			await repository.releaseDispatchClaims(claimed.slice(offset));
+		} catch (releaseError) {
+			// Unreleased claims stay 'queued' until the stale-queue recovery sweep.
+			console.error({
+				event: 'delivery_dispatch_release_failed',
+				count: claimed.length - offset,
+				error: releaseError instanceof Error ? releaseError.message : String(releaseError),
+			});
+		}
+		throw error;
 	}
 
-	if (dispatchable.length > 0) {
+	if (claimed.length > 0) {
 		console.info({
 			event: 'deliveries_dispatched',
-			count: dispatchable.length,
+			count: claimed.length,
 		});
 	}
 
-	return dispatchable.length;
+	return claimed.length;
 }

@@ -11,6 +11,7 @@ export interface SourceIngestionResult {
 	sourceId: string;
 	sourceKey: string;
 	discovered: number;
+	routedExisting: number;
 }
 
 export class IngestionService {
@@ -130,6 +131,7 @@ export class IngestionService {
 				sourceId: source.sourceId,
 				sourceKey: source.identityNamespace,
 				discovered: items.length,
+				routedExisting,
 			};
 		} catch (error) {
 			console.error({

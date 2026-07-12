@@ -19,40 +19,14 @@ import {
 	syncSourceRuntime,
 } from './ingestion/dispatcher';
 import { runCleanup } from './maintenance/cleanup';
+import {
+	scheduledTaskFor,
+	shouldSweepDeliveries,
+	sourceMaintenanceStagesFor,
+} from './scheduling';
 
-export const UPDATE_CRON = '* * * * *';
-export const CLEANUP_CRON = '0 4 * * *';
-
-export type ScheduledTask = 'cleanup' | 'update';
-export type SourceMaintenanceStage = 'readiness' | 'source_recovery' | 'source_sync';
-
-const MINUTE_MS = 60_000;
-const SOURCE_MAINTENANCE_INTERVAL_MINUTES = 15;
-const SOURCE_SYNC_OFFSET_MINUTES = 1;
-const SOURCE_RECOVERY_OFFSET_MINUTES = 6;
-const READINESS_OFFSET_MINUTES = 11;
-
-export function scheduledTaskFor(cron: string): ScheduledTask {
-	if (cron === UPDATE_CRON) return 'update';
-	if (cron === CLEANUP_CRON) return 'cleanup';
-
-	throw new Error(`Unsupported cron trigger: ${cron}`);
-}
-
-/**
- * Spreads heavier source maintenance across the 15-minute cycle. Normal due-source
- * dispatch still runs every minute, so existing 60-second poll intervals are unchanged.
- */
-export function sourceMaintenanceStagesFor(scheduledTime: number): SourceMaintenanceStage[] {
-	const minute = Math.floor(scheduledTime / MINUTE_MS);
-	const offset = ((minute % SOURCE_MAINTENANCE_INTERVAL_MINUTES)
-		+ SOURCE_MAINTENANCE_INTERVAL_MINUTES) % SOURCE_MAINTENANCE_INTERVAL_MINUTES;
-	if (offset === SOURCE_SYNC_OFFSET_MINUTES) return ['source_sync'];
-	if (offset === SOURCE_RECOVERY_OFFSET_MINUTES) return ['source_recovery'];
-	if (offset === READINESS_OFFSET_MINUTES) return ['readiness'];
-	return [];
-}
-
+// workerd treats every named export of the entry module as an entrypoint, so
+// only the default handler may be exported here; helpers live in scheduling.ts.
 export default {
 	async scheduled(controller, env) {
 		const config = getConfig(env);
@@ -77,7 +51,22 @@ export default {
 		if (batch.queue === INGESTION_DLQ_NAME) {
 			await consumeIngestionDeadLetterBatch(batch as MessageBatch<IngestionJob>, env);
 		} else if (batch.queue === INGESTION_QUEUE_NAME) {
-			await consumeIngestionBatch(batch as MessageBatch<IngestionJob>, env, config);
+			const readyDeliveries = await consumeIngestionBatch(
+				batch as MessageBatch<IngestionJob>,
+				env,
+				config,
+			);
+			if (readyDeliveries > 0) {
+				try {
+					await dispatchReadyDeliveries(env, config);
+				} catch (error) {
+					// Undispatched deliveries stay pending for the cron sweep.
+					console.error({
+						event: 'post_ingestion_dispatch_failed',
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
 		} else if (batch.queue === DELIVERY_DLQ_NAME) {
 			await consumeDeadLetterBatch(batch as MessageBatch<DeliveryJob>, env, config);
 		} else {
@@ -100,7 +89,14 @@ export default {
 		}
 		if (request.method === 'GET' && url.pathname === '/health/ready') {
 			try {
-				const readiness = await sourceReadiness(env, getConfig(env));
+				const config = getConfig(env);
+				if (!authorizedForReadiness(request, config.health.readinessToken)) {
+					return Response.json({ error: 'Unauthorized' }, {
+						status: 401,
+						headers: { 'cache-control': 'no-store' },
+					});
+				}
+				const readiness = await sourceReadiness(env, config);
 				return Response.json({
 					service: 'telegram-hub',
 					...readiness,
@@ -132,6 +128,21 @@ export default {
 	},
 } satisfies ExportedHandler<Env, DeliveryJob | IngestionJob>;
 
+function authorizedForReadiness(request: Request, token: string | null): boolean {
+	if (!token) return true;
+	const header = request.headers.get('authorization');
+	if (!header?.startsWith('Bearer ')) return false;
+	return timingSafeStringEqual(header.slice('Bearer '.length), token);
+}
+
+function timingSafeStringEqual(left: string, right: string): boolean {
+	const encoder = new TextEncoder();
+	const leftBytes = encoder.encode(left);
+	const rightBytes = encoder.encode(right);
+	if (leftBytes.byteLength !== rightBytes.byteLength) return false;
+	return crypto.subtle.timingSafeEqual(leftBytes, rightBytes);
+}
+
 async function runUpdate(
 	env: Env,
 	config: ReturnType<typeof getConfig>,
@@ -139,9 +150,10 @@ async function runUpdate(
 ): Promise<void> {
 	const failures: unknown[] = [];
 	const maintenance = new Set(sourceMaintenanceStagesFor(scheduledTime));
-	const stages: Array<readonly [string, () => Promise<unknown>]> = [
-		['delivery_dispatch', () => dispatchReadyDeliveries(env, config)],
-	];
+	const stages: Array<readonly [string, () => Promise<unknown>]> = [];
+	if (shouldSweepDeliveries(scheduledTime)) {
+		stages.push(['delivery_dispatch', () => dispatchReadyDeliveries(env, config)]);
+	}
 	if (maintenance.has('source_sync')) {
 		stages.push(['source_sync', () => syncSourceRuntime(env, scheduledTime)]);
 	}

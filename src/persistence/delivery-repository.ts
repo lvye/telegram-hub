@@ -2,9 +2,12 @@ import { normalizeDestinationKey } from '../config';
 import type {
 	DeliveryLease,
 	DeliveryState,
-	DispatchableDelivery,
 } from '../domain/delivery';
 import type { CanonicalItem } from '../domain/ingestion';
+import {
+	EMPTY_SOURCE_HTTP_CACHE_ENTRY,
+	type SourceHttpCacheEntry,
+} from '../ingestion/source-http-cache';
 import type {
 	TwitterApiIoCheckpoint,
 	TwitterApiIoCheckpointProgress,
@@ -392,26 +395,31 @@ export class DeliveryRepository implements IngestionRepository {
 		}
 	}
 
-	async listDispatchable(now = currentUnixTime(), limit = 100): Promise<DispatchableDelivery[]> {
+	async claimDispatchable(now = currentUnixTime(), limit = 100): Promise<number[]> {
 		const result = await this.db.prepare(`
-			SELECT id AS delivery_id
-			FROM message_deliveries
-			WHERE state = 'pending' AND next_attempt_at <= ?
-			ORDER BY next_attempt_at, id
-			LIMIT ?
-		`).bind(now, limit).all<{ delivery_id: number }>();
-		return result.results.map(({ delivery_id }) => ({ deliveryId: delivery_id }));
+			UPDATE message_deliveries
+			SET state = 'queued', queued_at = ?, updated_at = ?
+			WHERE id IN (
+				SELECT id
+				FROM message_deliveries
+				WHERE state = 'pending' AND next_attempt_at <= ?
+				ORDER BY next_attempt_at, id
+				LIMIT ?
+			)
+			RETURNING id
+		`).bind(now, now, now, limit).all<{ id: number }>();
+		return result.results.map(({ id }) => id);
 	}
 
-	async markQueued(deliveryIds: number[], now = currentUnixTime()): Promise<void> {
+	async releaseDispatchClaims(deliveryIds: number[], now = currentUnixTime()): Promise<void> {
 		for (let offset = 0; offset < deliveryIds.length; offset += UPDATE_ID_CHUNK_SIZE) {
 			const chunk = deliveryIds.slice(offset, offset + UPDATE_ID_CHUNK_SIZE);
 			const placeholders = chunk.map(() => '?').join(',');
 			await this.db.prepare(`
 				UPDATE message_deliveries
-				SET state = 'queued', queued_at = ?, updated_at = ?
-				WHERE id IN (${placeholders}) AND state = 'pending'
-			`).bind(now, now, ...chunk).run();
+				SET state = 'pending', queued_at = NULL, updated_at = ?
+				WHERE id IN (${placeholders}) AND state = 'queued'
+			`).bind(now, ...chunk).run();
 		}
 	}
 
@@ -638,21 +646,71 @@ export class DeliveryRepository implements IngestionRepository {
 
 	async compactDeliveredItems(retentionDays: number, now = currentUnixTime()): Promise<number> {
 		const cutoff = now - retentionDays * 86_400;
+		// Driven by idx_content_items_compactable so the sweep reads only items
+		// that still hold content, not every delivery row ever written.
 		const result = await this.db.prepare(`
 			UPDATE content_items
 			SET
 				title = NULL, description = NULL, author_name = NULL,
 				image_url = NULL, metadata_json = '{}', updated_at = ?
-			WHERE id IN (
-				SELECT item_id
-				FROM message_deliveries
-				GROUP BY item_id
-				HAVING MAX(updated_at) <= ?
-					AND SUM(CASE WHEN state IN ('sent', 'dead', 'blocked') THEN 0 ELSE 1 END) = 0
-			)
-				AND (title IS NOT NULL OR description IS NOT NULL OR image_url IS NOT NULL)
+			WHERE (title IS NOT NULL OR description IS NOT NULL OR image_url IS NOT NULL)
+				AND EXISTS (
+					SELECT 1
+					FROM message_deliveries
+					WHERE message_deliveries.item_id = content_items.id
+				)
+				AND NOT EXISTS (
+					SELECT 1
+					FROM message_deliveries
+					WHERE message_deliveries.item_id = content_items.id
+						AND (
+							message_deliveries.state NOT IN ('sent', 'dead', 'blocked')
+							OR message_deliveries.updated_at > ?
+						)
+				)
 		`).bind(now, cutoff).run();
 		return result.meta.changes ?? 0;
+	}
+
+	async getSourceHttpCache(sourceId: string): Promise<SourceHttpCacheEntry> {
+		const row = await this.db.prepare(`
+			SELECT checkpoints.checkpoint_json
+			FROM source_connector_checkpoints AS checkpoints
+			JOIN source_connectors AS connectors ON connectors.id = checkpoints.connector_id
+			WHERE connectors.connector_key = ?
+		`).bind(sourceId).first<{ checkpoint_json: string }>();
+		if (!row) return EMPTY_SOURCE_HTTP_CACHE_ENTRY;
+		const parsed: unknown = JSON.parse(row.checkpoint_json);
+		const record = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+			? parsed as Record<string, unknown>
+			: {};
+		return {
+			etag: typeof record.httpEtag === 'string' ? record.httpEtag : null,
+			lastModified: typeof record.httpLastModified === 'string' ? record.httpLastModified : null,
+		};
+	}
+
+	async setSourceHttpCache(
+		sourceId: string,
+		entry: SourceHttpCacheEntry,
+		now = currentUnixTime(),
+	): Promise<void> {
+		const checkpointJson = JSON.stringify({
+			...(entry.etag ? { httpEtag: entry.etag } : {}),
+			...(entry.lastModified ? { httpLastModified: entry.lastModified } : {}),
+		});
+		await this.db.prepare(`
+			INSERT INTO source_connector_checkpoints (
+				connector_id, initialized_at, checkpoint_json, updated_at
+			)
+			SELECT connectors.id, sources.created_at, ?, ?
+			FROM source_connectors AS connectors
+			JOIN sources ON sources.id = connectors.source_id
+			WHERE connectors.connector_key = ?
+			ON CONFLICT (connector_id) DO UPDATE SET
+				checkpoint_json = excluded.checkpoint_json,
+				updated_at = excluded.updated_at
+		`).bind(checkpointJson, now, sourceId).run();
 	}
 
 	private async getCheckpoint(checkpointKey: string): Promise<TwitterApiIoCheckpoint | null> {

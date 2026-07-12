@@ -212,4 +212,34 @@ it('uses bounded point lookups and partial indexes for hot paths', async () => {
 	const deliveryDetails = deliveryPlan.results.map(({ detail }) => detail);
 	expect(deliveryDetails.some((detail) => detail.includes('idx_message_deliveries_dispatch'))).toBe(true);
 	expect(deliveryDetails.every((detail) => !detail.includes('TEMP B-TREE'))).toBe(true);
+
+	const compactionPlan = await env.SCHEMA_DB.prepare(`
+		EXPLAIN QUERY PLAN
+		UPDATE content_items
+		SET
+			title = NULL, description = NULL, author_name = NULL,
+			image_url = NULL, metadata_json = '{}', updated_at = ?
+		WHERE (title IS NOT NULL OR description IS NOT NULL OR image_url IS NOT NULL)
+			AND EXISTS (
+				SELECT 1
+				FROM message_deliveries
+				WHERE message_deliveries.item_id = content_items.id
+			)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM message_deliveries
+				WHERE message_deliveries.item_id = content_items.id
+					AND (
+						message_deliveries.state NOT IN ('sent', 'dead', 'blocked')
+						OR message_deliveries.updated_at > ?
+					)
+			)
+	`).bind(1_783_760_000, 1_783_760_000).all<{ detail: string }>();
+	const compactionDetails = compactionPlan.results.map(({ detail }) => detail);
+	expect(compactionDetails.some((detail) => (
+		detail.includes('idx_content_items_compactable')
+	))).toBe(true);
+	expect(compactionDetails.every((detail) => (
+		!detail.includes('SCAN message_deliveries')
+	))).toBe(true);
 });

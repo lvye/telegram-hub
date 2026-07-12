@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import worker, {
+import {
 	CLEANUP_CRON,
 	scheduledTaskFor,
+	shouldSweepDeliveries,
 	sourceMaintenanceStagesFor,
 	UPDATE_CRON,
-} from '../src/worker';
+} from '../src/scheduling';
+import worker from '../src/worker';
 
 describe('worker', () => {
 	it('serves a read-only health endpoint', async () => {
@@ -44,6 +46,14 @@ describe('worker', () => {
 		expect(stagesAt('04:06')).toEqual(['source_recovery']);
 		expect(stagesAt('04:11')).toEqual(['readiness']);
 		expect(stagesAt('04:16')).toEqual(['source_sync']);
+	});
+
+	it('sweeps ready deliveries only on five-minute boundaries', () => {
+		expect(shouldSweepDeliveries(Date.parse('2026-07-10T04:00:00Z'))).toBe(true);
+		expect(shouldSweepDeliveries(Date.parse('2026-07-10T04:01:00Z'))).toBe(false);
+		expect(shouldSweepDeliveries(Date.parse('2026-07-10T04:04:00Z'))).toBe(false);
+		expect(shouldSweepDeliveries(Date.parse('2026-07-10T04:05:00Z'))).toBe(true);
+		expect(shouldSweepDeliveries(Date.parse('2026-07-10T04:55:00Z'))).toBe(true);
 	});
 });
 

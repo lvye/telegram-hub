@@ -90,9 +90,13 @@ export interface AppConfig {
 	cleanup: {
 		retentionDays: number;
 	};
+	health: {
+		readinessToken: string | null;
+	};
 }
 
 type OptionalBindings = {
+	READINESS_TOKEN?: string;
 	TWITTERAPI_IO_API_KEY?: string;
 };
 
@@ -138,6 +142,9 @@ export function getConfig(env: Env): AppConfig {
 		},
 		cleanup: {
 			retentionDays: 30,
+		},
+		health: {
+			readinessToken: optionalBinding((env as Env & OptionalBindings).READINESS_TOKEN),
 		},
 	};
 }

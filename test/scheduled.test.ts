@@ -5,7 +5,8 @@ import { getConfig } from '../src/config';
 import type { CanonicalItem, IngestionJob } from '../src/domain/ingestion';
 import { DeliveryRepository } from '../src/persistence/delivery-repository';
 import { SourceRuntimeStateRepository } from '../src/persistence/source-runtime-state-repository';
-import worker, { CLEANUP_CRON, UPDATE_CRON } from '../src/worker';
+import { CLEANUP_CRON, UPDATE_CRON } from '../src/scheduling';
+import worker from '../src/worker';
 import { resetDatabase, seedDefaultTopology } from './d1-fixtures';
 
 const ITEM: CanonicalItem = {
@@ -98,13 +99,16 @@ describe('scheduled handler', () => {
 		]);
 	});
 
-	it('dispatches pending deliveries even when the ingestion producer fails', async () => {
+	it('sweeps pending deliveries on the boundary minute even when the ingestion producer fails', async () => {
 		const repository = new DeliveryRepository(env.DB);
 		await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [ITEM], 1_000);
+		await new SourceRuntimeStateRepository(env.DB).syncActiveSources(
+			Math.floor(Date.parse('2026-07-10T04:00:00Z') / 1_000),
+		);
 		sendIngestionBatch.mockRejectedValueOnce(new Error('queue unavailable'));
 		const controller = createScheduledController({
 			cron: UPDATE_CRON,
-			scheduledTime: new Date('2026-07-10T04:01:00Z'),
+			scheduledTime: new Date('2026-07-10T04:05:00Z'),
 		});
 
 		await expect(worker.scheduled(controller, workerEnv)).rejects.toThrow('queue unavailable');
@@ -113,6 +117,23 @@ describe('scheduled handler', () => {
 			SELECT state FROM message_deliveries
 		`).first<{ state: string }>();
 		expect(state).toEqual({ state: 'queued' });
+	});
+
+	it('skips the delivery sweep on non-boundary minutes', async () => {
+		const repository = new DeliveryRepository(env.DB);
+		await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [ITEM], 1_000);
+		const controller = createScheduledController({
+			cron: UPDATE_CRON,
+			scheduledTime: new Date('2026-07-10T04:02:00Z'),
+		});
+
+		await worker.scheduled(controller, workerEnv);
+
+		expect(sendDeliveryBatch).not.toHaveBeenCalled();
+		const state = await env.DB.prepare(`
+			SELECT state FROM message_deliveries
+		`).first<{ state: string }>();
+		expect(state).toEqual({ state: 'pending' });
 	});
 
 	it('does not scan or initialize the source catalog on an ordinary minute', async () => {
@@ -167,7 +188,7 @@ describe('scheduled handler', () => {
 	it('runs only compaction for the cleanup cron', async () => {
 		const repository = new DeliveryRepository(env.DB);
 		await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [ITEM], 1_000);
-		const [{ deliveryId }] = await repository.listDispatchable(1_000);
+		const [deliveryId] = await repository.claimDispatchable(1_000);
 		await repository.acquireLease(deliveryId, 'cleanup-lease', 1_000);
 		await repository.markSent(deliveryId, 'cleanup-lease', '1', 1_001);
 		const controller = createScheduledController({

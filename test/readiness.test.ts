@@ -32,6 +32,27 @@ describe('source readiness', () => {
 		});
 	});
 
+	it('rejects readiness probes without the configured bearer token', async () => {
+		const response = await worker.fetch(
+			new Request('https://example.com/health/ready'),
+			{ ...workerEnv(), READINESS_TOKEN: 'readiness-secret' } as Env,
+		);
+
+		expect(response.status).toBe(401);
+	});
+
+	it('accepts readiness probes carrying the configured bearer token', async () => {
+		await syncSources();
+		const response = await worker.fetch(
+			new Request('https://example.com/health/ready', {
+				headers: { authorization: 'Bearer readiness-secret' },
+			}),
+			{ ...workerEnv(), READINESS_TOKEN: 'readiness-secret' } as Env,
+		);
+
+		expect(response.status).toBe(200);
+	});
+
 	it('reports a dead source as not ready', async () => {
 		await syncSources();
 		await runtime.claimForQueue('rss:it_home', 'dead-token', NOW, 300);

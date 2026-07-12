@@ -9,6 +9,7 @@ import type {
 } from '../domain/ingestion';
 import { getParser } from '../parsers';
 import type { ParsedFeedItem } from '../parsers/types';
+import type { SourceHttpCacheEntry, SourceHttpCacheStore } from './source-http-cache';
 import { parseRetryAfter, SourceHttpError } from './source-http-error';
 
 export const RSS_SOURCE_ADAPTER_KEY = 'rss';
@@ -16,10 +17,20 @@ export const RSS_SOURCE_ADAPTER_KEY = 'rss';
 export interface RssLoadRequestOptions {
 	fetchImpl?: typeof fetch;
 	headers?: HeadersInit;
+	/** Validators from the last fully persisted fetch, sent as a conditional request. */
+	conditional?: SourceHttpCacheEntry;
+}
+
+export interface RssFeedSnapshot {
+	notModified: boolean;
+	items: CanonicalItem[];
+	validators: SourceHttpCacheEntry;
 }
 
 export class RssSourceAdapter implements SourceAdapter<RssSourceAdapterConfig> {
 	readonly key = RSS_SOURCE_ADAPTER_KEY;
+
+	constructor(private readonly httpCache: SourceHttpCacheStore) {}
 
 	decodeConfig(config: unknown): RssSourceAdapterConfig {
 		return decodeRssSourceAdapterConfig(config);
@@ -29,14 +40,34 @@ export class RssSourceAdapter implements SourceAdapter<RssSourceAdapterConfig> {
 		source: SourceDefinition<RssSourceAdapterConfig>,
 		context: SourceAdapterContext,
 	): Promise<IngestionBatch> {
+		const cached = await this.httpCache.getSourceHttpCache(source.sourceId);
+		const snapshot = await loadRssFeed(
+			source.config,
+			source.identityNamespace,
+			context.options,
+			{ conditional: cached },
+		);
+		if (snapshot.notModified) {
+			return {
+				items: [],
+				itemLimit: context.options.maxItemsPerSource,
+				checkpoint: null,
+				telemetry: { provider: 'rss' },
+			};
+		}
+
+		const validatorsChanged = snapshot.validators.etag !== cached.etag
+			|| snapshot.validators.lastModified !== cached.lastModified;
 		return {
-			items: await loadRssCanonicalItems(
-				source.config,
-				source.identityNamespace,
-				context.options,
-			),
+			items: snapshot.items,
 			itemLimit: context.options.maxItemsPerSource,
-			checkpoint: null,
+			checkpoint: validatorsChanged ? {
+				commit: (updatedAt) => this.httpCache.setSourceHttpCache(
+					source.sourceId,
+					snapshot.validators,
+					updatedAt,
+				),
+			} : null,
 			telemetry: { provider: 'rss' },
 		};
 	}
@@ -69,13 +100,34 @@ export async function loadRssCanonicalItems(
 	options: IngestionOptions,
 	requestOptions: RssLoadRequestOptions = {},
 ): Promise<CanonicalItem[]> {
+	const snapshot = await loadRssFeed(config, identityNamespace, options, requestOptions);
+	return snapshot.items;
+}
+
+export async function loadRssFeed(
+	config: RssSourceAdapterConfig,
+	identityNamespace: string,
+	options: IngestionOptions,
+	requestOptions: RssLoadRequestOptions = {},
+): Promise<RssFeedSnapshot> {
 	const headers = new Headers(requestOptions.headers);
 	headers.set('accept', 'application/atom+xml, application/rss+xml, application/xml, text/xml');
+	const conditional = requestOptions.conditional;
+	if (conditional?.etag) headers.set('if-none-match', conditional.etag);
+	if (conditional?.lastModified) headers.set('if-modified-since', conditional.lastModified);
 	const response = await (requestOptions.fetchImpl ?? fetch)(config.url, {
 		headers,
 		signal: AbortSignal.timeout(options.feedTimeoutMs),
 	});
 
+	if (response.status === 304) {
+		await response.body?.cancel();
+		return {
+			notModified: true,
+			items: [],
+			validators: conditional ?? { etag: null, lastModified: null },
+		};
+	}
 	if (!response.ok) {
 		const retryAfterSeconds = parseRetryAfter(response.headers.get('retry-after'));
 		await response.body?.cancel();
@@ -94,11 +146,18 @@ export async function loadRssCanonicalItems(
 
 	const feed = await readBodyWithLimit(response, options.maxFeedBytes);
 	const parsed = getParser(config.parser)(feed);
-	return Promise.all(parsed.map((item) => normalizeRssItem(
-		item,
-		identityNamespace,
-		config,
-	)));
+	return {
+		notModified: false,
+		items: await Promise.all(parsed.map((item) => normalizeRssItem(
+			item,
+			identityNamespace,
+			config,
+		))),
+		validators: {
+			etag: response.headers.get('etag'),
+			lastModified: response.headers.get('last-modified'),
+		},
+	};
 }
 
 async function readBodyWithLimit(response: Response, maxBytes: number): Promise<string> {

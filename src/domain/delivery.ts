@@ -12,10 +12,6 @@ export interface DeliveryJob {
 	deliveryId: number;
 }
 
-export interface DispatchableDelivery {
-	deliveryId: number;
-}
-
 export interface DeliveryState {
 	id: number;
 	status: DeliveryStatus;

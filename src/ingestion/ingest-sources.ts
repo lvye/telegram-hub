@@ -45,7 +45,7 @@ export function defaultSourceAdapterRegistry(
 ): SourceAdapterRegistry {
 	const checkpoints = new D1TwitterApiIoCheckpointStore(repository);
 	return new SourceAdapterRegistry()
-		.register(new RssSourceAdapter())
+		.register(new RssSourceAdapter(repository))
 		.register(new NitterUserSourceAdapter(checkpoints))
 		.register(new TwitterApiIoUserSourceAdapter(checkpoints));
 }

@@ -41,7 +41,8 @@ The Worker only exposes read-only `GET /health` and `GET /health/ready` endpoint
 - Queue-delayed retries for retryable Telegram responses; permanent API errors go directly to `dead`
 - Native Cloudflare DLQ reconciliation; non-exhausted application work returns to `retry`
 - Batched D1 statements stay within the per-invocation query budget of Workers Free
-- The ingestion Queue consumes one source job per invocation; the minute Cron is the single delivery dispatcher, while source sync, recovery, and readiness are staggered across a 15-minute cycle to avoid full Catalog decoding and competing enqueue attempts
+- The ingestion Queue consumes one source job per invocation; new deliveries dispatch immediately after a successful ingestion, a five-minute Cron sweep drains recovery paths, and source sync, recovery, and readiness are staggered across a 15-minute cycle to avoid full Catalog decoding and competing enqueue attempts
+- RSS fetches send `If-None-Match`/`If-Modified-Since` conditional requests; an unchanged feed short-circuits on 304 and skips the download, parse, and identity lookups
 - D1, Cron, Queue, and HTTP tests run inside workerd
 
 ## Layout

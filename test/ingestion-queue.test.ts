@@ -6,7 +6,6 @@ import {
 } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getConfig } from '../src/config';
-import { dispatchReadyDeliveries } from '../src/delivery/dispatcher';
 import type { IngestionJob } from '../src/domain/ingestion';
 import { ingestionRetryDelaySeconds } from '../src/ingestion/consumer';
 import { SourceRuntimeStateRepository } from '../src/persistence/source-runtime-state-repository';
@@ -219,7 +218,7 @@ describe('ingestion queue consumer', () => {
 		});
 	});
 
-	it('runs through the configured ingestion and delivery queues', async () => {
+	it('runs through the configured queues and dispatches new deliveries without a cron sweep', async () => {
 		const job = await claimedJob();
 		vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
 			const request = new Request(input, init);
@@ -234,14 +233,61 @@ describe('ingestion queue consumer', () => {
 		await vi.waitFor(async () => {
 			expect(await runtime.get(SOURCE_ID)).toMatchObject({ status: 'idle' });
 			const delivery = await deliveryState('native-queue-guid');
-			expect(delivery).toEqual({ status: 'pending' });
-		}, { timeout: 2_000, interval: 20 });
-
-		await dispatchReadyDeliveries(env, getConfig(env));
-		await vi.waitFor(async () => {
-			const delivery = await deliveryState('native-queue-guid');
 			expect(delivery).toEqual({ status: 'sent' });
 		}, { timeout: 2_000, interval: 20 });
+	});
+
+	it('stores feed validators and short-circuits an unchanged feed via 304', async () => {
+		const job = await claimedJob();
+		vi.mocked(globalThis.fetch).mockResolvedValue(rss('conditional-guid', {
+			etag: '"feed-v1"',
+			'last-modified': 'Fri, 10 Jul 2026 04:00:00 GMT',
+		}));
+		await dispatch(job);
+
+		const checkpoint = await env.DB.prepare(`
+			SELECT checkpoints.checkpoint_json
+			FROM source_connector_checkpoints AS checkpoints
+			JOIN source_connectors AS connectors ON connectors.id = checkpoints.connector_id
+			WHERE connectors.connector_key = ?
+		`).bind(SOURCE_ID).first<{ checkpoint_json: string }>();
+		expect(JSON.parse(checkpoint?.checkpoint_json ?? '{}')).toEqual({
+			httpEtag: '"feed-v1"',
+			httpLastModified: 'Fri, 10 Jul 2026 04:00:00 GMT',
+		});
+
+		const later = NOW + 60;
+		vi.spyOn(Date, 'now').mockReturnValue(later * 1_000);
+		const queueToken = crypto.randomUUID();
+		await expect(runtime.claimForQueue(SOURCE_ID, queueToken, later, 300)).resolves.toBe(true);
+		const conditionalRequests: Array<{ etag: string | null; lastModified: string | null }> = [];
+		vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+			const request = new Request(input, init);
+			conditionalRequests.push({
+				etag: request.headers.get('if-none-match'),
+				lastModified: request.headers.get('if-modified-since'),
+			});
+			return new Response(null, { status: 304 });
+		});
+
+		const { result } = await dispatch({
+			version: 1, sourceId: SOURCE_ID, queueToken, scheduledAt: later,
+		});
+
+		expect(result.explicitAcks).toEqual(['ingestion-message-1']);
+		expect(conditionalRequests).toEqual([{
+			etag: '"feed-v1"',
+			lastModified: 'Fri, 10 Jul 2026 04:00:00 GMT',
+		}]);
+		expect(await runtime.get(SOURCE_ID)).toMatchObject({
+			status: 'idle',
+			lastSuccessAt: later,
+			nextPollAt: later + 60,
+		});
+		const counts = await env.DB.prepare(`
+			SELECT COUNT(*) AS items FROM content_items
+		`).first<{ items: number }>();
+		expect(counts).toEqual({ items: 1 });
 	});
 
 	async function deliveryState(canonicalId: string): Promise<{ status: string } | null> {
@@ -292,7 +338,7 @@ function ingestionEnv(): Env {
 	};
 }
 
-function rss(guid: string): Response {
+function rss(guid: string, headers: Record<string, string> = {}): Response {
 	return new Response(`
 		<rss><channel><item>
 			<guid>${guid}</guid>
@@ -301,7 +347,7 @@ function rss(guid: string): Response {
 			<link>https://example.com/${guid}</link>
 			<pubDate>Fri, 10 Jul 2026 04:10:00 GMT</pubDate>
 		</item></channel></rss>
-	`, { headers: { 'content-type': 'application/rss+xml' } });
+	`, { headers: { 'content-type': 'application/rss+xml', ...headers } });
 }
 
 function rssItems(count: number): Response {

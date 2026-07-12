@@ -1,4 +1,5 @@
 import type { CanonicalItem } from '../domain/ingestion';
+import type { SourceHttpCacheStore } from '../ingestion/source-http-cache';
 import type {
 	TwitterApiIoCheckpoint,
 	TwitterApiIoCheckpointProgress,
@@ -9,7 +10,7 @@ export interface ResolvedItemCandidate {
 	itemId: number;
 }
 
-export interface IngestionRepository {
+export interface IngestionRepository extends SourceHttpCacheStore {
 	resolveExistingItems(
 		identityNamespace: string,
 		candidates: Array<Pick<CanonicalItem, 'externalId' | 'identityAliases'>>,

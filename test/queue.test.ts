@@ -91,10 +91,9 @@ describe('delivery queue consumer', () => {
 			...ITEM,
 			externalId: 'unknown-destination-item',
 		}]);
-		const [delivery] = await repository.listDispatchable();
-		await repository.markQueued([delivery.deliveryId]);
+		const [deliveryId] = await repository.claimDispatchable();
 
-		const { result } = await dispatch(delivery.deliveryId);
+		const { result } = await dispatch(deliveryId);
 
 		expect(result.explicitAcks).toEqual(['queue-message-1']);
 		expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -102,7 +101,7 @@ describe('delivery queue consumer', () => {
 			SELECT state AS status, last_error_code
 			FROM message_deliveries
 			WHERE id = ?
-		`).bind(delivery.deliveryId).first<{
+		`).bind(deliveryId).first<{
 			last_error_code: string | null;
 			status: string;
 		}>();
@@ -184,9 +183,8 @@ describe('delivery queue consumer', () => {
 
 async function seedDelivery(repository: DeliveryRepository): Promise<number> {
 	await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [ITEM]);
-	const [delivery] = await repository.listDispatchable();
-	await repository.markQueued([delivery.deliveryId]);
-	return delivery.deliveryId;
+	const [deliveryId] = await repository.claimDispatchable();
+	return deliveryId;
 }
 
 async function dispatch(deliveryId: number, queueName = 'telegram-delivery') {

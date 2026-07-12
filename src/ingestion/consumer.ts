@@ -10,11 +10,15 @@ import { SourceHttpError } from './source-http-error';
 
 const MAX_DELAY_SECONDS = 86_400;
 
+/**
+ * Consumes claimed source jobs and returns how many deliveries became ready,
+ * so the queue handler can dispatch them without waiting for the cron sweep.
+ */
 export async function consumeIngestionBatch(
 	batch: MessageBatch<IngestionJob>,
 	env: Env,
 	config: AppConfig,
-): Promise<void> {
+): Promise<number> {
 	const deliveryRepository = new DeliveryRepository(env.DB);
 	const runtime = new SourceRuntimeStateRepository(env.DB);
 	const catalog = new D1SourceCatalog(env.DB, config);
@@ -22,6 +26,7 @@ export async function consumeIngestionBatch(
 		deliveryRepository,
 		defaultSourceAdapterRegistry(deliveryRepository),
 	);
+	let readyDeliveries = 0;
 
 	for (const message of batch.messages) {
 		if (!isIngestionJob(message.body)) {
@@ -69,6 +74,7 @@ export async function consumeIngestionBatch(
 			);
 			if (!marked) throw new Error(`Lost source runtime lease for ${job.sourceId}`);
 
+			readyDeliveries += result.discovered + result.routedExisting;
 			if (result.discovered > 0) {
 				console.info({
 					event: 'source_job_succeeded',
@@ -91,6 +97,7 @@ export async function consumeIngestionBatch(
 		}
 	}
 
+	return readyDeliveries;
 }
 
 export async function consumeIngestionDeadLetterBatch(

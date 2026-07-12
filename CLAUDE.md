@@ -41,6 +41,8 @@ npm run db:migrate:remote
 - Item identity is `(identity_namespace, canonical_id)` plus indexed aliases; delivery identity is `(item_id, destination_id)`.
 - Adding a provider must only require a `SourceAdapter` registration and Catalog entry. Do not add provider conditionals to `IngestionService`.
 - Ingestion treats a known identity as immutable. RSS scans the byte-bounded feed and writes at most 50 unseen items per run; the API adapter uses a bounded page budget plus a durable continuation cursor. Both query known aliases once so compaction stays compacted and delayed items can drain across runs.
+- RSS fetches are conditional: `ETag`/`Last-Modified` validators live in `source_connector_checkpoints.checkpoint_json` and commit only after every unseen item in the batch persists, so a 304 never hides unpersisted work.
+- New deliveries dispatch immediately after a successful ingestion job; the update Cron sweeps ready deliveries only on five-minute boundaries as the recovery path (DLQ reconciliation, stale leases). Do not rely on the sweep for first-attempt latency.
 - Provider switches must preserve `source_key` and `identity_namespace`, canonicalize provider-specific identity, and bootstrap `source_connector_checkpoints` from a known identity rather than a wall-clock-only cutover.
 - Source execution must acquire a `sourceId` lease and conditionally finish with the same token. A stale invocation must not overwrite a newer attempt's runtime result.
 - Ingestion Queue jobs must carry the D1 queue token. Retryable source failures preserve that token while scheduling `Retry-After`/exponential-jitter delay; expired claims and leases are recoverable, and permanent HTTP failures become `blocked`.

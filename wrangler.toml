@@ -14,22 +14,26 @@ required = [
 ]
 # TWITTERAPI_IO_API_KEY is optional and only required by an active
 # twitterapi-io.user-timeline connector.
+# READINESS_TOKEN is optional; when set, GET /health/ready requires
+# an "Authorization: Bearer <token>" header.
 
 # Cron Triggers
 # Docs: https://developers.cloudflare.com/workers/platform/triggers/cron-triggers/
 # Configuration: https://developers.cloudflare.com/workers/wrangler/configuration/#triggers
 [triggers]
 crons = [
-  "* * * * *",    # 每分钟抓取 Feed 并分发 ready deliveries
+  "* * * * *",    # 每分钟调度到期来源；delivery 随 ingestion 即时分发，Cron 每 5 分钟兜底扫描
   "0 4 * * *"     # 每天 04:00 UTC 恢复陈旧状态并压缩终态内容
 ]
 
 [observability]
 enabled = true
 
+# Structured application logs cover every meaningful event; per-invocation
+# log entries would mostly record idle cron minutes against the daily quota.
 [observability.logs]
 enabled = true
-invocation_logs = true
+invocation_logs = false
 head_sampling_rate = 1
 
 [observability.traces]

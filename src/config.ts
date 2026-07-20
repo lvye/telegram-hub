@@ -127,7 +127,7 @@ export function getConfig(env: Env): AppConfig {
 			maxItemsPerSource: 50,
 			leaseSeconds: 5 * 60,
 			queueClaimSeconds: 5 * 60,
-			deadRecoverySeconds: 6 * 60 * 60,
+			deadRecoverySeconds: 60 * 60,
 			blockedRecoverySeconds: 60 * 60,
 			readinessMinimumSeconds: 10 * 60,
 			readinessPollMultiplier: 3,

@@ -39,6 +39,10 @@ describe('runtime configuration', () => {
 		expect(withApi.twitterApiIo.apiKey).toBe('api-key');
 	});
 
+	it('recovers dead ingestion sources after one hour', () => {
+		expect(getConfig(BASE_ENV).ingestion.deadRecoverySeconds).toBe(60 * 60);
+	});
+
 	it('fails early when a required destination binding is missing', () => {
 		expect(() => getConfig({
 			...BASE_ENV,

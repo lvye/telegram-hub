@@ -26,7 +26,7 @@ The Worker only exposes read-only `GET /health` and `GET /health/ready` endpoint
 - A Source Runtime separates source instances, adapters, identity namespaces, and delivery destinations
 - `source_connector_state` stores provider-neutral cadence, leases, consecutive failures, and next-poll state; `source_connector_checkpoints` stores provider checkpoints
 - Cron atomically claims due sources from runtime state; the ingestion consumer point-loads only the claimed Catalog entry and uses queue tokens and source leases to reject duplicate or expired jobs
-- Source 429/5xx failures combine `Retry-After`, exponential backoff, and jitter; permanent 4xx failures become `blocked`, exhausted ingestion DLQ jobs become `dead`, and both probe recovery after separate cooldowns
+- Source 429/5xx failures combine `Retry-After`, exponential backoff, and jitter; permanent 4xx failures become `blocked`, exhausted ingestion DLQ jobs become `dead`, and both probe recovery after their configured cooldowns
 - RSS and TwitterAPI.io adapters emit provider-neutral `CanonicalItem` batches; one ingestion service owns deduplication, persistence, and checkpoint commits
 - Telegram chat IDs, parse mode, and message format live in destination configuration rather than discovery sources
 - `(identity_namespace, canonical_id)` plus independent `item_identities` instead of a publication-date watermark

@@ -36,7 +36,7 @@ Worker 仅保留只读的 `GET /health` 和 `GET /health/ready`。readiness 会�
 - Source Runtime 将 `sourceId`、adapter、identity namespace 和 destination 分离；Cron 直接在运行状态表中原子 claim 到期来源，Queue consumer 再通过 Catalog 点查单个来源并交给 adapter registry
 - `source_connector_state` 保存 provider-neutral 的 cadence、租约、连续失败和下次轮询状态；`source_connector_checkpoints` 保存 provider checkpoint
 - Cron 只按 `next_poll_at` 产生一个 source 一个 job；Ingestion Queue consumer 用 queue token 和 source lease 吸收重复或过期消息
-- 来源 429/5xx 同时遵守 `Retry-After`、指数退避和 jitter；永久 4xx 进入 `blocked`，原生 ingestion DLQ 耗尽后写入 `dead`，两者在不同冷却期后自动探测恢复
+- 来源 429/5xx 同时遵守 `Retry-After`、指数退避和 jitter；永久 4xx 进入 `blocked`，原生 ingestion DLQ 耗尽后写入 `dead`，两者均按各自配置的冷却期自动探测恢复
 - RSS、Nitter 与 TwitterAPI.io adapter 都输出 provider-neutral `CanonicalItem`，统一 ingestion service 负责去重、入库和 checkpoint 提交
 - Telegram chat、parse mode 和 message format 属于独立 destination 配置，不再混入抓取 source
 - 使用 `(identity_namespace, canonical_id)` 和独立的 `item_identities` 去重，不依赖发布时间水位

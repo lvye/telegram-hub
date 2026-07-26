@@ -49,6 +49,29 @@ describe('delivery queue consumer', () => {
 		expect(row).toEqual({ status: 'sent', provider_message_id: '123' });
 	});
 
+	it('pins the Telegram link preview to the original article URL', async () => {
+		const deliveryId = await seedDelivery(repository, {
+			...ITEM,
+			externalId: 'article-with-related-link',
+			description: '正文内的相关链接：https://wrong.example/related',
+			link: 'https://www.ithome.com/0/999/001.htm',
+		});
+		vi.mocked(globalThis.fetch).mockResolvedValue(Response.json({
+			ok: true,
+			result: { message_id: 124 },
+		}));
+
+		await dispatch(deliveryId);
+
+		const [, init] = vi.mocked(globalThis.fetch).mock.calls[0];
+		expect(JSON.parse(String(init?.body))).toMatchObject({
+			chat_id: 'test-it-home-chat',
+			link_preview_options: {
+				url: 'https://www.ithome.com/0/999/001.htm',
+			},
+		});
+	});
+
 	it('uses Telegram retry_after for a delayed queue retry', async () => {
 		const deliveryId = await seedDelivery(repository);
 		vi.mocked(globalThis.fetch).mockResolvedValue(Response.json({
@@ -181,8 +204,11 @@ describe('delivery queue consumer', () => {
 	});
 });
 
-async function seedDelivery(repository: DeliveryRepository): Promise<number> {
-	await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [ITEM]);
+async function seedDelivery(
+	repository: DeliveryRepository,
+	item: CanonicalItem = ITEM,
+): Promise<number> {
+	await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [item]);
 	const [deliveryId] = await repository.claimDispatchable();
 	return deliveryId;
 }

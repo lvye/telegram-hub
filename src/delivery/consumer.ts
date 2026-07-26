@@ -154,7 +154,12 @@ async function deliver(
 		}
 	}
 
-	return telegram.sendMessage(destination.chatId, message, destination.parseMode);
+	return telegram.sendMessage(
+		destination.chatId,
+		message,
+		destination.parseMode,
+		lease.link,
+	);
 }
 
 async function handleUnavailableDelivery(

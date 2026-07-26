@@ -1,5 +1,6 @@
 import type { DeliveryDestinationConfig } from '../config';
 import type { DeliveryLease } from '../domain/delivery';
+import { safeHttpUrl } from '../utils/http-url';
 import { renderHtmlForTelegram } from './telegram-html-serializer';
 
 export function formatTelegramMessage(
@@ -28,16 +29,6 @@ export function formatTelegramMessage(
 function formatLink(link: string | null, label: string): string {
 	const safeLink = safeHttpUrl(link);
 	return safeLink ? `<a href="${escapeAttribute(safeLink)}">${escapeHtml(label)}</a>` : '';
-}
-
-function safeHttpUrl(value: string | null): string | null {
-	if (!value?.trim()) return null;
-	try {
-		const url = new URL(value.trim());
-		return url.protocol === 'http:' || url.protocol === 'https:' ? value.trim() : null;
-	} catch {
-		return null;
-	}
 }
 
 function escapeHtml(value: string): string {

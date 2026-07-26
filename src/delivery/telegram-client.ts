@@ -1,3 +1,4 @@
+import { safeHttpUrl } from '../utils/http-url';
 import { PermanentDeliveryError, RetryableDeliveryError } from './errors';
 
 interface TelegramResponse {
@@ -22,11 +23,18 @@ export class TelegramClient {
 		private readonly requestTimeoutMs: number,
 	) {}
 
-	async sendMessage(chatId: string, message: string, parseMode: string): Promise<TelegramSendResult> {
+	async sendMessage(
+		chatId: string,
+		message: string,
+		parseMode: string,
+		linkPreviewUrl: string | null = null,
+	): Promise<TelegramSendResult> {
+		const previewUrl = safeHttpUrl(linkPreviewUrl);
 		return this.request('sendMessage', {
 			chat_id: chatId,
 			text: message,
 			parse_mode: parseMode,
+			...(previewUrl ? { link_preview_options: { url: previewUrl } } : {}),
 		});
 	}
 

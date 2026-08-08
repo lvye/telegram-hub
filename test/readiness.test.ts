@@ -53,6 +53,20 @@ describe('source readiness', () => {
 		expect(response.status).toBe(200);
 	});
 
+	it.each([
+		'short',
+		'readiness-secret-with-a-longer-suffix',
+	])('rejects an invalid bearer token regardless of its length', async (token) => {
+		const response = await worker.fetch(
+			new Request('https://example.com/health/ready', {
+				headers: { authorization: `Bearer ${token}` },
+			}),
+			{ ...workerEnv(), READINESS_TOKEN: 'readiness-secret' } as Env,
+		);
+
+		expect(response.status).toBe(401);
+	});
+
 	it('reports a dead source as not ready', async () => {
 		await syncSources();
 		await runtime.claimForQueue('rss:it_home', 'dead-token', NOW, 300);

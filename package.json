@@ -6,7 +6,7 @@
   "scripts": {
     "cf:types:generate": "wrangler types",
     "cf:types:check": "wrangler types --check",
-    "check": "npm run cf:types:check && npm run ts:check && npm test && npm run test:smoke && npm run deploy:dry",
+    "check": "npm run cf:types:check && npm run ts:check && npm run lint && npm test && npm run test:smoke && npm run deploy:dry",
     "db:migrations:list:local": "wrangler d1 migrations list telegram-hub-prod --local",
     "db:migrations:list:remote": "wrangler d1 migrations list telegram-hub-prod --remote",
     "db:migrate:local": "wrangler d1 migrations apply telegram-hub-prod --local",
@@ -15,20 +15,23 @@
     "deploy": "wrangler deploy",
     "deploy:dry": "wrangler deploy --dry-run --outdir .wrangler/check",
     "dev": "wrangler dev",
+    "lint": "oxlint --deny typescript/no-floating-promises src/",
     "test": "vitest run",
     "test:smoke": "node --test scripts/smoke-health.node.mjs",
     "test:watch": "vitest",
     "ts:check": "tsc --noEmit"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.4",
+    "@cloudflare/vitest-pool-workers": "^0.20.3",
+    "@types/node": "^26.2.0",
+    "oxlint": "^1.77.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
-    "wrangler": "^4.110.0"
+    "wrangler": "^4.120.0"
   },
   "dependencies": {
     "domhandler": "^6.0.1",
-    "fast-xml-parser": "^5.9.3",
+    "fast-xml-parser": "^5.10.1",
     "htmlparser2": "^12.0.0"
   }
 }

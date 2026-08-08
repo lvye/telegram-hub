@@ -90,7 +90,7 @@ export default {
 		if (request.method === 'GET' && url.pathname === '/health/ready') {
 			try {
 				const config = getConfig(env);
-				if (!authorizedForReadiness(request, config.health.readinessToken)) {
+				if (!await authorizedForReadiness(request, config.health.readinessToken)) {
 					return Response.json({ error: 'Unauthorized' }, {
 						status: 401,
 						headers: { 'cache-control': 'no-store' },
@@ -128,19 +128,20 @@ export default {
 	},
 } satisfies ExportedHandler<Env, DeliveryJob | IngestionJob>;
 
-function authorizedForReadiness(request: Request, token: string | null): boolean {
+async function authorizedForReadiness(request: Request, token: string | null): Promise<boolean> {
 	if (!token) return true;
 	const header = request.headers.get('authorization');
 	if (!header?.startsWith('Bearer ')) return false;
 	return timingSafeStringEqual(header.slice('Bearer '.length), token);
 }
 
-function timingSafeStringEqual(left: string, right: string): boolean {
+async function timingSafeStringEqual(left: string, right: string): Promise<boolean> {
 	const encoder = new TextEncoder();
-	const leftBytes = encoder.encode(left);
-	const rightBytes = encoder.encode(right);
-	if (leftBytes.byteLength !== rightBytes.byteLength) return false;
-	return crypto.subtle.timingSafeEqual(leftBytes, rightBytes);
+	const [leftHash, rightHash] = await Promise.all([
+		crypto.subtle.digest('SHA-256', encoder.encode(left)),
+		crypto.subtle.digest('SHA-256', encoder.encode(right)),
+	]);
+	return crypto.subtle.timingSafeEqual(leftHash, rightHash);
 }
 
 async function runUpdate(

@@ -40,7 +40,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Set D1 database ID
-        run: sed -i 's/<your-database-id>/${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}/' wrangler.toml
+        run: sed -i 's/<your-database-id>/${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}/' wrangler.jsonc
       - name: Apply D1 migrations
         run: npm run db:migrate:remote
         env:

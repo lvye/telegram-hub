@@ -12,6 +12,7 @@ Telegram Hub is a TypeScript ES Module Worker. Scheduled events ingest RSS feeds
 npm ci
 npm run cf:types:generate # regenerate worker-configuration.d.ts
 npm run ts:check
+npm run lint            # Worker-specific floating Promise check
 npm test            # Vitest in the Cloudflare workerd pool
 npm run deploy:dry
 npm run check       # generated types + TypeScript + tests + dry-run bundle

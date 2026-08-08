@@ -74,7 +74,7 @@ npx wrangler queues create source-ingestion
 npx wrangler queues create source-ingestion-dlq
 ```
 
-Copy the returned D1 `database_id` into the single `DB` binding in `wrangler.toml`, then configure the required secrets.
+Copy the returned D1 `database_id` into the single `DB` binding in `wrangler.jsonc`, then configure the required secrets.
 
 ```bash
 npx wrangler secret put TELEGRAM_BOT_TOKEN
@@ -129,6 +129,7 @@ Useful checks:
 ```bash
 npm run cf:types:check
 npm run ts:check
+npm run lint
 npm test
 npm run db:schema:check
 npm run db:migrate:local

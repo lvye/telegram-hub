@@ -92,7 +92,7 @@ npx wrangler queues create source-ingestion
 npx wrangler queues create source-ingestion-dlq
 ```
 
-将 D1 命令返回的 `database_id` 写入 `wrangler.toml` 的唯一 `DB` binding。Queue 名称已经在配置中声明。
+将 D1 命令返回的 `database_id` 写入 `wrangler.jsonc` 的唯一 `DB` binding。Queue 名称已经在配置中声明。
 
 ### 3. 配置密钥
 
@@ -165,6 +165,7 @@ curl "http://localhost:8787/cdn-cgi/handler/scheduled?cron=0+4+*+*+*&format=json
 ```bash
 npm run cf:types:check            # Cloudflare binding 类型
 npm run ts:check                  # TypeScript
+npm run lint                      # 浮动 Promise 等 Worker 规则
 npm test                          # workerd tests
 npm run db:schema:check           # schema、约束与索引计划
 npm run db:migrate:local          # 当前数据库本地 migration

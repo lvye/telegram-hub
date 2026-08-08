@@ -1,0 +1,103 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "telegram-hub",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
+
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+
+  "secrets": {
+    "required": [
+      "TELEGRAM_BOT_TOKEN",
+      "IT_HOME_CHAT_ID",
+      "TWITTER_CHAT_ID"
+    ]
+  },
+  // TWITTERAPI_IO_API_KEY is optional and only required by an active
+  // twitterapi-io.user-timeline connector.
+  // READINESS_TOKEN is optional; when set, GET /health/ready requires
+  // an "Authorization: Bearer <token>" header.
+
+  // Cron only schedules bounded work; Queue consumers perform ingestion and delivery.
+  "triggers": {
+    "crons": [
+      "* * * * *",
+      "0 4 * * *"
+    ]
+  },
+
+  "observability": {
+    "enabled": true,
+    // Structured application logs cover every meaningful event; per-invocation
+    // log entries would mostly record idle cron minutes against the daily quota.
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1
+    }
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "telegram-hub-prod",
+      "database_id": "<your-database-id>",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "queues": {
+    "producers": [
+      {
+        "binding": "TELEGRAM_DELIVERY_QUEUE",
+        "queue": "telegram-delivery"
+      },
+      {
+        "binding": "INGESTION_QUEUE",
+        "queue": "source-ingestion"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "telegram-delivery",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "retry_delay": 30,
+        "dead_letter_queue": "telegram-delivery-dlq",
+        "max_concurrency": 1
+      },
+      {
+        "queue": "telegram-delivery-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "max_concurrency": 1
+      },
+      {
+        "queue": "source-ingestion",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "retry_delay": 30,
+        "dead_letter_queue": "source-ingestion-dlq",
+        "max_concurrency": 5
+      },
+      {
+        "queue": "source-ingestion-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "max_concurrency": 1
+      }
+    ]
+  }
+}

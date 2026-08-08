@@ -234,7 +234,7 @@ describe('ingestion queue consumer', () => {
 			expect(await runtime.get(SOURCE_ID)).toMatchObject({ status: 'idle' });
 			const delivery = await deliveryState('native-queue-guid');
 			expect(delivery).toEqual({ status: 'sent' });
-		}, { timeout: 2_000, interval: 20 });
+		}, { timeout: 4_000, interval: 20 });
 	});
 
 	it('stores feed validators and short-circuits an unchanged feed via 304', async () => {

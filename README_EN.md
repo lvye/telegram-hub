@@ -2,13 +2,13 @@
 
 [中文](./README.md)
 
-An RSS / Nitter / TwitterAPI.io-to-Telegram aggregator built for Cloudflare Workers. Cron only produces source jobs, D1 stores stable identities and runtime state, and Cloudflare Queues handles asynchronous ingestion, delivery, backoff, and dead-lettering.
+An RSS / Nitter / TwitterAPI.io / X API-to-Telegram aggregator built for Cloudflare Workers. Cron only produces source jobs, D1 stores stable identities and runtime state, and Cloudflare Queues handles asynchronous ingestion, delivery, backoff, and dead-lettering.
 
 ## Runtime model
 
 ```text
 Cron → claim due sources in D1 → Ingestion Queue sourceId + queueToken
-     → source lease → fetch/parse RSS or poll TwitterAPI.io
+     → source lease → fetch/parse RSS or poll TwitterAPI.io / X API
      → D1 content_items + message_deliveries → Delivery Queue deliveryId
      → queue() consumer → D1 lease → Telegram → sent/retry/dead
 
@@ -27,12 +27,13 @@ The Worker only exposes read-only `GET /health` and `GET /health/ready` endpoint
 - `source_connector_state` stores provider-neutral cadence, leases, consecutive failures, and next-poll state; `source_connector_checkpoints` stores provider checkpoints
 - Cron atomically claims due sources from runtime state; the ingestion consumer point-loads only the claimed Catalog entry and uses queue tokens and source leases to reject duplicate or expired jobs
 - Source 429/5xx failures combine `Retry-After`, exponential backoff, and jitter; permanent 4xx failures become `blocked`, exhausted ingestion DLQ jobs become `dead`, and both probe recovery after their configured cooldowns
-- RSS and TwitterAPI.io adapters emit provider-neutral `CanonicalItem` batches; one ingestion service owns deduplication, persistence, and checkpoint commits
+- RSS, TwitterAPI.io, and X API adapters emit provider-neutral `CanonicalItem` batches; one ingestion service owns deduplication, persistence, and checkpoint commits
 - Telegram chat IDs, parse mode, and message format live in destination configuration rather than discovery sources
 - `(identity_namespace, canonical_id)` plus independent `item_identities` instead of a publication-date watermark
-- Nitter, TwitterAPI.io, and legacy RSS share the `twitter` identity namespace; RSS keeps its provider GUID while tweet status IDs deduplicate across providers
+- Nitter, TwitterAPI.io, X API, and legacy RSS share the `twitter` identity namespace; RSS keeps its provider GUID while tweet status IDs deduplicate across providers
 - The latest known RSS tweet identity becomes the handoff high-water, avoiding wall-clock gaps; table-backed accounts fail independently instead of fetching the same RSS fallback repeatedly
 - API cursors, pending high-water, and committed high-water are durable; a page-budget stop resumes on the next eligible Cron
+- `provider_usage_daily` aggregates requests, returned resources, billable units, and estimated USD cost by UTC day, connector, operation, and unit-price snapshot
 - Each source run accepts at most 500 raw candidates and 1,000 deduplicated identity aliases; oversized batches mark the source `blocked` instead of consuming D1 and Queue resources without a bound
 - Each run persists at most 50 unseen items; checkpointed providers commit only after their backlog drains across bounded windows, so the window cannot skip content
 - Known identities use chunked primary-key lookups on `(identity_namespace, identity_value)` and reuse the resolved item IDs instead of repeatedly joining the full identity table
@@ -82,21 +83,36 @@ npx wrangler secret put IT_HOME_CHAT_ID
 npx wrangler secret put TWITTER_CHAT_ID
 ```
 
-### Optional TwitterAPI.io provider
+### Optional Twitter providers
 
 Keep the API key in a Worker secret and maintain accounts and provider configuration in D1 `sources` and `source_connectors`:
 
 ```bash
 npx wrangler secret put TWITTERAPI_IO_API_KEY
+# Required only before an x.user-timeline connector becomes active:
+npx wrangler secret put X_API_BEARER_TOKEN
 ```
 
 After applying migrations, update operational rows transactionally through the Cloudflare Dashboard or a one-off `wrangler d1 execute --remote --command`, including the matching `source_routes` row. Never place real account INSERTs in migrations, seed SQL, or other Git-tracked files. Each connector carries a stable key, a handle without `@` in `config_json`, an `active/paused/archived` status, and per-account polling settings. Pausing a connector preserves its cursor and high-water.
 
-Polling cadence, page budget, and replies are stored per connector in `poll_interval_seconds` and `config_json`; they are no longer global Worker bindings. Each connector has an independent durable checkpoint. Page-budget continuations resume from the per-account cursor in `source_connector_checkpoints`.
+Polling cadence, page budget, and replies are stored per connector in `poll_interval_seconds` and `config_json`; combined search also stores `handles` and `overlapSeconds`. Each connector has an independent durable checkpoint. Page-budget continuations resume from `source_connector_checkpoints`.
 
-The endpoint does not currently publish a stable media-field contract, so the API provider sends text plus the source link; the RSS fallback retains its existing image parsing. The provider explicitly warns that frequent polling is expensive, so review cost before increasing cadence or page depth. See the [endpoint documentation](https://docs.twitterapi.io/api-reference/endpoint/get_user_last_tweets).
+`twitterapi-io.search` combines multiple handles into one [Advanced Search](https://docs.twitterapi.io/api-reference/endpoint/tweet-advanced-search) window; `twitterapi-io.user-timeline` remains for backward compatibility. `x.user-timeline` resolves and caches the X user ID once, then incrementally reads posts with `since_id`.
 
-An active `twitterapi-io.user-timeline` connector without the API key fails with an explicit configuration error. A `nitter.user-timeline` connector does not read or call TwitterAPI.io.
+An active `twitterapi-io.*` connector without its API key, or an active `x.user-timeline` connector without its bearer token, fails with an explicit configuration error. Paused connectors do not require their provider secret.
+
+The usage ledger applies the unit-price snapshot encoded at request time. It is an engineering estimate and should still be reconciled with provider invoices. Compare date ranges with:
+
+```sql
+SELECT provider_key, operation_key,
+       SUM(request_count) AS requests,
+       SUM(resource_count) AS resources,
+       SUM(billable_unit_count * unit_price_usd_micros) / 1000000.0 AS estimated_usd
+FROM provider_usage_daily
+WHERE usage_day BETWEEN '2026-08-24' AND '2026-10-24'
+GROUP BY provider_key, operation_key
+ORDER BY provider_key, operation_key;
+```
 
 Apply migrations before deploying the Worker:
 
@@ -106,7 +122,7 @@ npm run check
 npm run deploy
 ```
 
-`migrations` creates normalized topology, connector runtime/checkpoints, canonical content, provider observations, and destination delivery tables. The production Worker binds and reads only this D1 schema.
+`migrations` creates normalized topology, connector runtime/checkpoints, canonical content, provider observations, provider usage, and destination delivery tables. The production Worker binds and reads only this D1 schema.
 
 ## Local development
 

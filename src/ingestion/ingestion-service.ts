@@ -1,5 +1,6 @@
 import type {
 	CanonicalItem,
+	IngestionBatch,
 	IngestionOptions,
 	SourceDefinition,
 } from '../domain/ingestion';
@@ -33,6 +34,11 @@ export class IngestionService {
 				runId,
 				scheduledAt,
 			});
+			await this.repository.recordProviderUsage(
+				source.sourceId,
+				batch.telemetry.usage ?? [],
+				scheduledAt,
+			);
 			validateBatch(batch, source.sourceId, options.maxItemsPerSource);
 			if (batch.items.length > options.maxCandidatesPerSource) {
 				throw SourceIngestionLimitError.candidates(
@@ -112,6 +118,11 @@ export class IngestionService {
 					checkpointCommitted,
 					paginationComplete: batch.telemetry.paginationComplete,
 					paginationStopReason: batch.telemetry.paginationStopReason,
+					providerRequestCount: sumUsage(batch.telemetry.usage, 'requestCount'),
+					providerResourceCount: sumUsage(batch.telemetry.usage, 'resourceCount'),
+					providerEstimatedCostUsdMicros: estimatedCostUsdMicros(
+						batch.telemetry.usage,
+					),
 					elapsedMs: Date.now() - startedAt,
 				});
 			}
@@ -179,4 +190,17 @@ function deduplicateItems(items: CanonicalItem[]): CanonicalItem[] {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function sumUsage(
+	usage: IngestionBatch['telemetry']['usage'],
+	key: 'requestCount' | 'resourceCount',
+): number {
+	return (usage ?? []).reduce((sum, entry) => sum + entry[key], 0);
+}
+
+function estimatedCostUsdMicros(usage: IngestionBatch['telemetry']['usage']): number {
+	return (usage ?? []).reduce((sum, entry) => (
+		sum + entry.billableUnitCount * entry.unitPriceUsdMicros
+	), 0);
 }

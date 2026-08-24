@@ -53,6 +53,28 @@ export type TwitterApiIoUserAdapterConfig = Pick<
 	| 'userName'
 >;
 
+export interface TwitterApiIoSearchAdapterConfig {
+	apiKey: string;
+	endpoint: string;
+	handles: string[];
+	includeReplies: boolean;
+	initializationAt: number;
+	maxPages: number;
+	overlapSeconds: number;
+	providerStateKey: string;
+}
+
+export interface XOfficialUserAdapterConfig {
+	bearerToken: string;
+	endpoint: string;
+	includeReplies: boolean;
+	initializationAt: number;
+	maxPages: number;
+	providerStateKey: string;
+	userId: string | null;
+	userName: string;
+}
+
 export interface NitterUserAdapterConfig {
 	feedUrl: string;
 	userName: string;
@@ -65,6 +87,9 @@ export interface AppConfig {
 	destinations: DeliveryDestinationConfig[];
 	twitterApiIo: {
 		apiKey: string | null;
+	};
+	xOfficial: {
+		bearerToken: string | null;
 	};
 	ingestion: {
 		feedTimeoutMs: number;
@@ -98,6 +123,7 @@ export interface AppConfig {
 type OptionalBindings = {
 	READINESS_TOKEN?: string;
 	TWITTERAPI_IO_API_KEY?: string;
+	X_API_BEARER_TOKEN?: string;
 };
 
 export function getConfig(env: Env): AppConfig {
@@ -118,6 +144,9 @@ export function getConfig(env: Env): AppConfig {
 		],
 		twitterApiIo: {
 			apiKey: optionalBinding((env as Env & OptionalBindings).TWITTERAPI_IO_API_KEY),
+		},
+		xOfficial: {
+			bearerToken: optionalBinding((env as Env & OptionalBindings).X_API_BEARER_TOKEN),
 		},
 		ingestion: {
 			feedTimeoutMs: 15_000,

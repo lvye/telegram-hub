@@ -6,3 +6,6 @@ TWITTER_CHAT_ID=your-twitter-chat-id
 
 # Optional: required only by an active twitterapi-io.user-timeline connector.
 # TWITTERAPI_IO_API_KEY=your-twitterapi-io-api-key
+
+# Optional: required only by an active x.user-timeline connector.
+# X_API_BEARER_TOKEN=your-x-api-bearer-token

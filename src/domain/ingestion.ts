@@ -50,6 +50,16 @@ export interface IngestionTelemetry {
 	paginationComplete?: boolean;
 	paginationStopReason?: string;
 	initialization?: Record<string, unknown>;
+	usage?: ProviderUsage[];
+}
+
+export interface ProviderUsage {
+	operationKey: string;
+	providerKey: string;
+	requestCount: number;
+	resourceCount: number;
+	billableUnitCount: number;
+	unitPriceUsdMicros: number;
 }
 
 export interface IngestionCheckpointCommit {

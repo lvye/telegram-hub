@@ -28,15 +28,18 @@ describe('runtime configuration', () => {
 		expect(findDestination(config, 'telegram:it_home')?.chatId).toBe('it-home-chat');
 	});
 
-	it('loads only the optional TwitterAPI.io credential from bindings', () => {
+	it('loads optional Twitter provider credentials from bindings', () => {
 		const withoutApi = getConfig(BASE_ENV);
 		const withApi = getConfig({
 			...BASE_ENV,
 			TWITTERAPI_IO_API_KEY: 'api-key',
+			X_API_BEARER_TOKEN: 'x-token',
 		} as Env);
 
 		expect(withoutApi.twitterApiIo.apiKey).toBeNull();
+		expect(withoutApi.xOfficial.bearerToken).toBeNull();
 		expect(withApi.twitterApiIo.apiKey).toBe('api-key');
+		expect(withApi.xOfficial.bearerToken).toBe('x-token');
 	});
 
 	it('recovers dead ingestion sources after one hour', () => {

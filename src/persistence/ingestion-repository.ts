@@ -1,4 +1,4 @@
-import type { CanonicalItem } from '../domain/ingestion';
+import type { CanonicalItem, ProviderUsage } from '../domain/ingestion';
 import type { SourceHttpCacheStore } from '../ingestion/source-http-cache';
 import type {
 	TwitterApiIoCheckpoint,
@@ -11,6 +11,17 @@ export interface ResolvedItemCandidate {
 }
 
 export interface IngestionRepository extends SourceHttpCacheStore {
+	recordProviderUsage(
+		sourceId: string,
+		usage: ProviderUsage[],
+		now?: number,
+	): Promise<void>;
+	getSourceProviderMetadata(sourceId: string): Promise<Record<string, unknown>>;
+	mergeSourceProviderMetadata(
+		sourceId: string,
+		metadata: Record<string, unknown>,
+		now?: number,
+	): Promise<void>;
 	resolveExistingItems(
 		identityNamespace: string,
 		candidates: Array<Pick<CanonicalItem, 'externalId' | 'identityAliases'>>,

@@ -2,12 +2,16 @@ import type {
 	AppConfig,
 	NitterUserAdapterConfig,
 	RssSourceAdapterConfig,
+	TwitterApiIoSearchAdapterConfig,
 	TwitterApiIoUserAdapterConfig,
+	XOfficialUserAdapterConfig,
 } from '../config';
 import type { SourceCatalog, SourceDefinition } from '../domain/ingestion';
 import { NITTER_USER_ADAPTER_KEY } from './nitter-source-adapter';
 import { RSS_SOURCE_ADAPTER_KEY } from './rss-source-adapter';
+import { TWITTER_API_IO_SEARCH_ADAPTER_KEY } from './twitterapi-io-search-source-adapter';
 import { TWITTER_API_IO_USER_ADAPTER_KEY } from './twitter-api-source-adapter';
+import { X_OFFICIAL_USER_ADAPTER_KEY } from './x-official-source-adapter';
 
 interface ConnectorRow {
 	source_id: string;
@@ -107,6 +111,54 @@ export class D1SourceCatalog implements SourceCatalog {
 				} satisfies TwitterApiIoUserAdapterConfig,
 			};
 		}
+		if (row.adapter_key === TWITTER_API_IO_SEARCH_ADAPTER_KEY) {
+			if (!this.config.twitterApiIo.apiKey) {
+				throw new Error(`Connector ${row.source_id} requires TWITTERAPI_IO_API_KEY`);
+			}
+			return {
+				...base,
+				config: {
+					apiKey: this.config.twitterApiIo.apiKey,
+					endpoint: requiredString(stored.endpoint, 'endpoint', row.source_id),
+					handles: requiredStringArray(stored.handles, 'handles', row.source_id),
+					includeReplies: requiredBoolean(
+						stored.includeReplies,
+						'includeReplies',
+						row.source_id,
+					),
+					initializationAt: row.initialized_at,
+					maxPages: requiredInteger(stored.maxPages, 'maxPages', row.source_id),
+					overlapSeconds: requiredNonNegativeInteger(
+						stored.overlapSeconds,
+						'overlapSeconds',
+						row.source_id,
+					),
+					providerStateKey: row.source_id,
+				} satisfies TwitterApiIoSearchAdapterConfig,
+			};
+		}
+		if (row.adapter_key === X_OFFICIAL_USER_ADAPTER_KEY) {
+			if (!this.config.xOfficial.bearerToken) {
+				throw new Error(`Connector ${row.source_id} requires X_API_BEARER_TOKEN`);
+			}
+			return {
+				...base,
+				config: {
+					bearerToken: this.config.xOfficial.bearerToken,
+					endpoint: requiredString(stored.endpoint, 'endpoint', row.source_id),
+					includeReplies: requiredBoolean(
+						stored.includeReplies,
+						'includeReplies',
+						row.source_id,
+					),
+					initializationAt: row.initialized_at,
+					maxPages: requiredInteger(stored.maxPages, 'maxPages', row.source_id),
+					providerStateKey: row.source_id,
+					userId: optionalString(stored.userId),
+					userName: requiredString(stored.userName, 'userName', row.source_id),
+				} satisfies XOfficialUserAdapterConfig,
+			};
+		}
 		throw new Error(
 			`Unsupported v2 connector ${row.source_id}: ${row.provider_key}/${row.adapter_key}`,
 		);
@@ -167,4 +219,29 @@ function requiredInteger(value: unknown, name: string, sourceId: string): number
 		throw new Error(`Connector ${sourceId} ${name} must be a positive integer`);
 	}
 	return Number(value);
+}
+
+function requiredNonNegativeInteger(
+	value: unknown,
+	name: string,
+	sourceId: string,
+): number {
+	if (!Number.isInteger(value) || Number(value) < 0) {
+		throw new Error(`Connector ${sourceId} ${name} must be a non-negative integer`);
+	}
+	return Number(value);
+}
+
+function requiredBoolean(value: unknown, name: string, sourceId: string): boolean {
+	if (typeof value !== 'boolean') {
+		throw new Error(`Connector ${sourceId} ${name} must be boolean`);
+	}
+	return value;
+}
+
+function requiredStringArray(value: unknown, name: string, sourceId: string): string[] {
+	if (!Array.isArray(value) || value.length === 0) {
+		throw new Error(`Connector ${sourceId} ${name} must be a non-empty string array`);
+	}
+	return value.map((entry) => requiredString(entry, name, sourceId));
 }

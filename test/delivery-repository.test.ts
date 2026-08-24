@@ -95,6 +95,55 @@ describe('DeliveryRepository', () => {
 		expect(row).toEqual({ version: 1, cursor: 'next-page', pending_high_water_identity: 'twitter:200' });
 	});
 
+	it('aggregates provider usage by UTC day and preserves provider metadata', async () => {
+		await repository.recordProviderUsage('rss:twitter', [{
+			operationKey: 'tweet.search.read',
+			providerKey: 'twitterapi_io',
+			requestCount: 1,
+			resourceCount: 2,
+			billableUnitCount: 2,
+			unitPriceUsdMicros: 150,
+		}], NOW);
+		await repository.recordProviderUsage('rss:twitter', [{
+			operationKey: 'tweet.search.read',
+			providerKey: 'twitterapi_io',
+			requestCount: 1,
+			resourceCount: 0,
+			billableUnitCount: 1,
+			unitPriceUsdMicros: 150,
+		}], NOW + 60);
+		await repository.mergeSourceProviderMetadata(
+			'rss:twitter',
+			{ xOfficialUserId: '4398626122' },
+			NOW + 60,
+		);
+		await repository.setSourceHttpCache(
+			'rss:twitter',
+			{ etag: 'test-etag', lastModified: null },
+			NOW + 61,
+		);
+
+		const row = await env.DB.prepare(`
+			SELECT
+				usage_day, request_count, resource_count, billable_unit_count,
+				unit_price_usd_micros,
+				billable_unit_count * unit_price_usd_micros AS estimated_cost_usd_micros
+			FROM provider_usage_daily
+		`).first();
+		expect(row).toEqual({
+			usage_day: '2026-07-11',
+			request_count: 2,
+			resource_count: 2,
+			billable_unit_count: 3,
+			unit_price_usd_micros: 150,
+			estimated_cost_usd_micros: 450,
+		});
+		await expect(repository.getSourceProviderMetadata('rss:twitter')).resolves.toEqual({
+			httpEtag: 'test-etag',
+			xOfficialUserId: '4398626122',
+		});
+	});
+
 	it('skips a checkpoint write when progress has not changed', async () => {
 		const checkpoint = await repository.getOrCreateSourceProviderState(
 			'twitter:status', 'rss:twitter', NOW, 60, null,

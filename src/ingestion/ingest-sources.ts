@@ -9,6 +9,8 @@ import {
 } from './source-adapter-registry';
 import { NitterUserSourceAdapter } from './nitter-source-adapter';
 import { TwitterApiIoUserSourceAdapter } from './twitter-api-source-adapter';
+import { TwitterApiIoSearchSourceAdapter } from './twitterapi-io-search-source-adapter';
+import { XOfficialUserSourceAdapter } from './x-official-source-adapter';
 
 export function validateRuntimeTopology(
 	config: AppConfig,
@@ -47,5 +49,7 @@ export function defaultSourceAdapterRegistry(
 	return new SourceAdapterRegistry()
 		.register(new RssSourceAdapter(repository))
 		.register(new NitterUserSourceAdapter(checkpoints))
-		.register(new TwitterApiIoUserSourceAdapter(checkpoints));
+		.register(new TwitterApiIoUserSourceAdapter(checkpoints))
+		.register(new TwitterApiIoSearchSourceAdapter(checkpoints))
+		.register(new XOfficialUserSourceAdapter(checkpoints, checkpoints));
 }

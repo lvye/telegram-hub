@@ -18,7 +18,8 @@
     ]
   },
   // TWITTERAPI_IO_API_KEY is optional and only required by an active
-  // twitterapi-io.user-timeline connector.
+  // twitterapi-io connector. X_API_BEARER_TOKEN is optional and only required
+  // by an active x.user-timeline connector.
   // READINESS_TOKEN is optional; when set, GET /health/ready requires
   // an "Authorization: Bearer <token>" header.
 

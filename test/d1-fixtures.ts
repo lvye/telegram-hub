@@ -4,6 +4,7 @@ import { RSS_SOURCE_ADAPTER_KEY } from '../src/ingestion/rss-source-adapter';
 
 export async function resetDatabase(db: D1Database): Promise<void> {
 	await db.batch([
+		db.prepare('DELETE FROM provider_usage_daily'),
 		db.prepare('DELETE FROM message_deliveries'),
 		db.prepare('DELETE FROM item_observations'),
 		db.prepare('DELETE FROM item_identities'),

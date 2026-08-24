@@ -2,7 +2,7 @@
 
 [English](./README_EN.md)
 
-基于 Cloudflare Workers 的 RSS / Nitter / TwitterAPI.io → Telegram 聚合器。Cron 只负责生成来源任务，D1 保存稳定 identity 和运行状态，Cloudflare Queues 负责异步采集、投递、退避重试和死信处理。
+基于 Cloudflare Workers 的 RSS / Nitter / TwitterAPI.io / X API → Telegram 聚合器。Cron 只负责生成来源任务，D1 保存稳定 identity 和运行状态，Cloudflare Queues 负责异步采集、投递、退避重试和死信处理。
 
 ## 运行模型
 
@@ -11,7 +11,7 @@ Cron (* * * * *)
   → D1 claim 到期 source
   → Ingestion Queue: sourceId + queueToken
   → D1 source lease
-  → 抓取/解析 RSS，或调用 TwitterAPI.io
+  → 抓取/解析 RSS，或调用 TwitterAPI.io / X API
   → D1: content_items + message_deliveries (pending)
   → Delivery Queue: deliveryId
   → queue() consumer
@@ -37,12 +37,13 @@ Worker 仅保留只读的 `GET /health` 和 `GET /health/ready`。readiness 会�
 - `source_connector_state` 保存 provider-neutral 的 cadence、租约、连续失败和下次轮询状态；`source_connector_checkpoints` 保存 provider checkpoint
 - Cron 只按 `next_poll_at` 产生一个 source 一个 job；Ingestion Queue consumer 用 queue token 和 source lease 吸收重复或过期消息
 - 来源 429/5xx 同时遵守 `Retry-After`、指数退避和 jitter；永久 4xx 进入 `blocked`，原生 ingestion DLQ 耗尽后写入 `dead`，两者均按各自配置的冷却期自动探测恢复
-- RSS、Nitter 与 TwitterAPI.io adapter 都输出 provider-neutral `CanonicalItem`，统一 ingestion service 负责去重、入库和 checkpoint 提交
+- RSS、Nitter、TwitterAPI.io 与 X API adapter 都输出 provider-neutral `CanonicalItem`，统一 ingestion service 负责去重、入库和 checkpoint 提交
 - Telegram chat、parse mode 和 message format 属于独立 destination 配置，不再混入抓取 source
 - 使用 `(identity_namespace, canonical_id)` 和独立的 `item_identities` 去重，不依赖发布时间水位
-- Nitter、TwitterAPI.io 与旧 RSS 共用 `twitter` identity namespace；RSS 保留原 GUID，tweet status ID 负责跨 provider 去重
+- Nitter、TwitterAPI.io、X API 与旧 RSS 共用 `twitter` identity namespace；RSS 保留原 GUID，tweet status ID 负责跨 provider 去重
 - 最新已知 RSS tweet identity 作为切换 high-water，避免墙钟 cutover 漏推；订阅表中的账号独立失败，不会重复抓取同一个 RSS fallback
-- TwitterAPI.io 的 cursor、pending high-water 与 committed high-water 持久化到 D1；单轮达到 page budget 后下轮续拉
+- TwitterAPI.io / X API 的 cursor、pending high-water 与 committed high-water 持久化到 D1；单轮达到 page budget 后下轮续拉
+- `provider_usage_daily` 按 UTC 日、connector、operation 和单价汇总请求量、返回资源数、计费单位及估算美元费用，便于按真实流量比较 provider
 - 每个来源单轮最多接受 500 个原始候选和 1,000 个去重 identity alias；超限会标记为 `blocked`，避免无界结果持续消耗 D1 与 Queue
 - 每轮最多持久化 50 个未见内容；带 checkpoint 的来源会在多轮排空 backlog 后才提交 checkpoint，不会因窗口限制跳过内容
 - 已见 identity 通过 `(identity_namespace, identity_value)` 主键分块点查并复用解析结果，不再反复联结整张 identity 表
@@ -102,32 +103,51 @@ npx wrangler secret put IT_HOME_CHAT_ID
 npx wrangler secret put TWITTER_CHAT_ID
 ```
 
-上述三个基础 binding 通过 `[secrets].required` 声明；缺失时部署会失败，而不是在 Cron 深层才报错。TwitterAPI.io key 是可选的，仅在启用相应 connector 时读取。
+上述三个基础 binding 通过 `[secrets].required` 声明；缺失时部署会失败，而不是在 Cron 深层才报错。TwitterAPI.io key 和 X Bearer Token 都是可选的，仅在启用相应 connector 时读取。
 
 ### Twitter provider 切换
 
 Twitter 账号作为 D1 `sources` 和 `source_connectors` 运行数据维护，真实账号行不进入 Git。`source_connectors.adapter_key` 决定每个账号使用哪个 provider：
 
 - `nitter.user-timeline`：逐账号请求 connector `config_json` 中的 `{baseUrl}/{userName}/rss`；
-- `twitterapi-io.user-timeline`：使用 TwitterAPI.io adapter、checkpoint 和分页逻辑。
+- `twitterapi-io.user-timeline`：旧的逐账号 TwitterAPI.io 时间线接口；
+- `twitterapi-io.search`：把多个 `handles` 合并成一次 Advanced Search，使用固定时间窗口、重叠保护和可恢复分页；
+- `x.user-timeline`：X 官方用户时间线接口，首次解析并缓存用户 ID，之后通过 `since_id` 增量读取。
 
-当前生产 connector 使用 `nitter.user-timeline` adapter。切换 provider 时应保留稳定的 `source_key`、`connector_key` 和 `identity_namespace`，仅更新 adapter/config；checkpoint 和跨 provider identity 不会丢失。Nitter adapter 对已配置的 HTTPS feed 使用受响应大小与超时限制的原生 TLS socket，并发送固定的只读 HTTP/1.1 GET。状态链接会规范化为 `x.com`，图片从 description HTML 提取。
+provider 切换通过同时维护 active/paused connector 完成，所有 Twitter connector 复用 `twitter` identity namespace，因此相同 status ID 不会重复投递。暂停 connector 不会删除 checkpoint。Nitter adapter 对已配置的 HTTPS feed 使用受响应大小与超时限制的原生 TLS socket，并发送固定的只读 HTTP/1.1 GET。状态链接会规范化为 `x.com`，图片从 description HTML 提取。
 
-### 可选：启用 TwitterAPI.io
+### 可选：启用 Twitter provider
 
 API key 只保存在 Worker secret；账号及 provider 配置由 D1 的 `sources`、`source_connectors` 维护：
 
 ```bash
 npx wrangler secret put TWITTERAPI_IO_API_KEY
+# 只有激活 x.user-timeline 前才需要：
+npx wrangler secret put X_API_BEARER_TOKEN
 ```
 
 通过 Cloudflare Dashboard 或一次性的 `wrangler d1 execute --remote --command` 事务更新运行数据，并同步维护 `source_routes`；不要把真实账号 INSERT 放进 migration、seed SQL 或其他 Git 跟踪文件。每个 connector 使用稳定 key、不带 `@` 的 `userName`、`active/paused/archived` 状态和独立轮询参数；暂停 connector 不会删除 cursor/high-water。
 
-轮询间隔、page budget 和 replies 开关属于每个 connector 的 `poll_interval_seconds` / `config_json`，不再由全局 Worker binding 控制。每个 connector 使用独立、稳定的 checkpoint；若单次达到 page budget，下一次到期 Cron 会从 `source_connector_checkpoints` 中保存的 cursor 续拉。
+轮询间隔、page budget 和 replies 开关属于每个 connector 的 `poll_interval_seconds` / `config_json`，不再由全局 Worker binding 控制。合并搜索额外使用 `handles` 和 `overlapSeconds`。每个 connector 使用独立、稳定的 checkpoint；若单次达到 page budget，下一次到期 Cron 会从 `source_connector_checkpoints` 中保存的 cursor 续拉。
 
-TwitterAPI.io adapter 兼容常见媒体字段，并在必要时从明确的 tweet photo 页面读取 Open Graph 图片。该 endpoint 官方不建议高频轮询，调整 cadence/page budget 前请先评估调用成本。[接口文档](https://docs.twitterapi.io/api-reference/endpoint/get_user_last_tweets)
+TwitterAPI.io adapter 兼容常见媒体字段，并在必要时从明确的 tweet photo 页面读取 Open Graph 图片。合并搜索使用 [Advanced Search](https://docs.twitterapi.io/api-reference/endpoint/tweet-advanced-search)，旧的逐账号接口仍保留兼容。[用户时间线接口](https://docs.twitterapi.io/api-reference/endpoint/get_user_last_tweets)
 
-选择 `twitterapi-io.user-timeline` 且缺少 API key 时会显式报配置错误。选择 `nitter.user-timeline` 时不会读取或调用 TwitterAPI.io。
+选择活动的 `twitterapi-io.*` 且缺少 API key，或活动的 `x.user-timeline` 且缺少 X token 时，会显式报配置错误；暂停 connector 不要求相应密钥。
+
+费用账本使用代码中执行请求时的单价快照：TwitterAPI.io Advanced Search 按返回 tweet 计费，空结果按一次最低计费；X API 分别按返回 post 和首次 user lookup 计费。它是运行流量的工程估算，月底仍应与 provider 账单核对。按日期比较：
+
+```sql
+SELECT
+  provider_key,
+  operation_key,
+  SUM(request_count) AS requests,
+  SUM(resource_count) AS resources,
+  SUM(billable_unit_count * unit_price_usd_micros) / 1000000.0 AS estimated_usd
+FROM provider_usage_daily
+WHERE usage_day BETWEEN '2026-08-24' AND '2026-10-24'
+GROUP BY provider_key, operation_key
+ORDER BY provider_key, operation_key;
+```
 
 ### 4. 应用数据库迁移
 
@@ -135,7 +155,7 @@ TwitterAPI.io adapter 兼容常见媒体字段，并在必要时从明确的 twe
 npm run db:migrate:remote
 ```
 
-`migrations` 创建规范化 topology、connector runtime/checkpoint、canonical content、provider observation 和 destination delivery 表。生产 Worker 只绑定并读写这一套 D1 schema。
+`migrations` 创建规范化 topology、connector runtime/checkpoint、canonical content、provider observation、provider usage 和 destination delivery 表。生产 Worker 只绑定并读写这一套 D1 schema。
 
 ### 5. 验证并部署
 

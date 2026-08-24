@@ -10,6 +10,7 @@ const EXPECTED_TABLES = [
 	'item_identities',
 	'item_observations',
 	'message_deliveries',
+	'provider_usage_daily',
 	'source_connector_checkpoints',
 	'source_connector_state',
 	'source_connectors',

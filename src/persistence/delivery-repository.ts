@@ -3,7 +3,7 @@ import type {
 	DeliveryLease,
 	DeliveryState,
 } from '../domain/delivery';
-import type { CanonicalItem } from '../domain/ingestion';
+import type { CanonicalItem, ProviderUsage } from '../domain/ingestion';
 import {
 	EMPTY_SOURCE_HTTP_CACHE_ENTRY,
 	type SourceHttpCacheEntry,
@@ -63,6 +63,86 @@ const MAX_ERROR_LENGTH = 1_000;
 
 export class DeliveryRepository implements IngestionRepository {
 	constructor(private readonly db: D1Database) {}
+
+	async recordProviderUsage(
+		sourceId: string,
+		usage: ProviderUsage[],
+		now = currentUnixTime(),
+	): Promise<void> {
+		if (usage.length === 0) return;
+		for (const entry of usage) validateProviderUsage(entry);
+
+		const results = await this.db.batch(usage.map((entry) => this.db.prepare(`
+			INSERT INTO provider_usage_daily (
+				usage_day, connector_id, provider_key, operation_key,
+				request_count, resource_count, billable_unit_count,
+				unit_price_usd_micros, created_at, updated_at
+			)
+			SELECT
+				strftime('%Y-%m-%d', ?, 'unixepoch'), connectors.id, ?, ?,
+				?, ?, ?, ?, ?, ?
+			FROM source_connectors AS connectors
+			WHERE connectors.connector_key = ?
+			ON CONFLICT (
+				usage_day, connector_id, operation_key, unit_price_usd_micros
+			) DO UPDATE SET
+				request_count = provider_usage_daily.request_count + excluded.request_count,
+				resource_count = provider_usage_daily.resource_count + excluded.resource_count,
+				billable_unit_count = provider_usage_daily.billable_unit_count
+					+ excluded.billable_unit_count,
+				updated_at = excluded.updated_at
+		`).bind(
+			now,
+			entry.providerKey,
+			entry.operationKey,
+			entry.requestCount,
+			entry.resourceCount,
+			entry.billableUnitCount,
+			entry.unitPriceUsdMicros,
+			now,
+			now,
+			sourceId,
+		)));
+		if (results.some((result) => (result.meta.changes ?? 0) !== 1)) {
+			throw new Error(`Could not record provider usage for ${sourceId}`);
+		}
+	}
+
+	async getSourceProviderMetadata(sourceId: string): Promise<Record<string, unknown>> {
+		const row = await this.db.prepare(`
+			SELECT checkpoints.checkpoint_json
+			FROM source_connector_checkpoints AS checkpoints
+			JOIN source_connectors AS connectors ON connectors.id = checkpoints.connector_id
+			WHERE connectors.connector_key = ?
+		`).bind(sourceId).first<{ checkpoint_json: string }>();
+		return row ? jsonRecord(row.checkpoint_json) : {};
+	}
+
+	async mergeSourceProviderMetadata(
+		sourceId: string,
+		metadata: Record<string, unknown>,
+		now = currentUnixTime(),
+	): Promise<void> {
+		const metadataJson = JSON.stringify(metadata);
+		const result = await this.db.prepare(`
+			INSERT INTO source_connector_checkpoints (
+				connector_id, initialized_at, checkpoint_json, updated_at
+			)
+			SELECT connectors.id, sources.created_at, ?, ?
+			FROM source_connectors AS connectors
+			JOIN sources ON sources.id = connectors.source_id
+			WHERE connectors.connector_key = ?
+			ON CONFLICT (connector_id) DO UPDATE SET
+				checkpoint_json = json_patch(
+					source_connector_checkpoints.checkpoint_json,
+					excluded.checkpoint_json
+				),
+				updated_at = excluded.updated_at
+		`).bind(metadataJson, now, sourceId).run();
+		if ((result.meta.changes ?? 0) !== 1) {
+			throw new Error(`Could not update provider metadata for ${sourceId}`);
+		}
+	}
 
 	async upsertItems(
 		identityNamespace: string,
@@ -680,10 +760,7 @@ export class DeliveryRepository implements IngestionRepository {
 			WHERE connectors.connector_key = ?
 		`).bind(sourceId).first<{ checkpoint_json: string }>();
 		if (!row) return EMPTY_SOURCE_HTTP_CACHE_ENTRY;
-		const parsed: unknown = JSON.parse(row.checkpoint_json);
-		const record = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-			? parsed as Record<string, unknown>
-			: {};
+		const record = jsonRecord(row.checkpoint_json);
 		return {
 			etag: typeof record.httpEtag === 'string' ? record.httpEtag : null,
 			lastModified: typeof record.httpLastModified === 'string' ? record.httpLastModified : null,
@@ -708,7 +785,10 @@ export class DeliveryRepository implements IngestionRepository {
 			JOIN sources ON sources.id = connectors.source_id
 			WHERE connectors.connector_key = ?
 			ON CONFLICT (connector_id) DO UPDATE SET
-				checkpoint_json = excluded.checkpoint_json,
+				checkpoint_json = json_patch(
+					source_connector_checkpoints.checkpoint_json,
+					excluded.checkpoint_json
+				),
 				updated_at = excluded.updated_at
 		`).bind(checkpointJson, now, sourceId).run();
 	}
@@ -810,6 +890,32 @@ function mapLease(row: DeliveryLeaseRow): DeliveryLease {
 
 function truncate(value: string): string {
 	return value.slice(0, MAX_ERROR_LENGTH);
+}
+
+function jsonRecord(value: string): Record<string, unknown> {
+	const parsed: unknown = JSON.parse(value);
+	return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+		? parsed as Record<string, unknown>
+		: {};
+}
+
+function validateProviderUsage(usage: ProviderUsage): void {
+	if (!usage.providerKey.trim() || usage.providerKey !== usage.providerKey.toLowerCase()) {
+		throw new Error('Provider usage providerKey must be non-empty lowercase text');
+	}
+	if (!usage.operationKey.trim() || usage.operationKey !== usage.operationKey.toLowerCase()) {
+		throw new Error('Provider usage operationKey must be non-empty lowercase text');
+	}
+	for (const [name, value] of Object.entries({
+		requestCount: usage.requestCount,
+		resourceCount: usage.resourceCount,
+		billableUnitCount: usage.billableUnitCount,
+		unitPriceUsdMicros: usage.unitPriceUsdMicros,
+	})) {
+		if (!Number.isSafeInteger(value) || value < 0) {
+			throw new Error(`Provider usage ${name} must be a non-negative safe integer`);
+		}
+	}
 }
 
 function currentUnixTime(): number {

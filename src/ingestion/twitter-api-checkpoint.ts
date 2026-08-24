@@ -30,3 +30,12 @@ export interface TwitterApiIoCheckpointStore {
 		updatedAt: number,
 	): Promise<void>;
 }
+
+export interface SourceProviderMetadataStore {
+	getMetadata(sourceId: string): Promise<Record<string, unknown>>;
+	mergeMetadata(
+		sourceId: string,
+		metadata: Record<string, unknown>,
+		updatedAt: number,
+	): Promise<void>;
+}

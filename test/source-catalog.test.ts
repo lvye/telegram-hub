@@ -166,11 +166,77 @@ describe('D1SourceCatalog', () => {
 		const [source] = await new D1SourceCatalog(env.DB, config).list();
 		expect(source.config).toMatchObject({ apiKey: 'test-key', userName: 'OpenAI', maxPages: 1 });
 	});
+
+	it('builds combined search and official X configurations only with their secrets', async () => {
+		await seedConnector({
+			sourceKey: 'twitter:search:five-accounts',
+			sourceType: 'twitter_search',
+			identityNamespace: 'twitter',
+			connectorKey: 'twitterapi-io:search:five-accounts',
+			providerKey: 'twitterapi_io',
+			adapterKey: 'twitterapi-io.search',
+			pollSeconds: 300,
+			config: {
+				endpoint: 'https://api.twitterapi.io/twitter/tweet/advanced_search',
+				handles: ['MacroMargin', 'OpenAI'],
+				includeReplies: false,
+				maxPages: 5,
+				overlapSeconds: 120,
+			},
+			initializedAt: NOW - 600,
+		});
+		await seedConnector({
+			sourceKey: 'twitter:user:official-openai',
+			sourceType: 'twitter_user',
+			identityNamespace: 'twitter',
+			connectorKey: 'x:subscription:openai',
+			providerKey: 'x',
+			adapterKey: 'x.user-timeline',
+			pollSeconds: 300,
+			status: 'paused',
+			config: {
+				endpoint: 'https://api.x.com/2',
+				userName: 'OpenAI',
+				userId: null,
+				includeReplies: false,
+				maxPages: 5,
+			},
+		});
+
+		const searchConfig = getConfig({ ...env, TWITTERAPI_IO_API_KEY: 'search-key' } as Env);
+		await expect(new D1SourceCatalog(env.DB, searchConfig).list()).resolves.toEqual([
+			expect.objectContaining({
+				sourceId: 'twitterapi-io:search:five-accounts',
+				config: expect.objectContaining({
+					handles: ['MacroMargin', 'OpenAI'],
+					initializationAt: NOW - 600,
+					overlapSeconds: 120,
+				}),
+			}),
+		]);
+
+		await env.DB.prepare(`
+			UPDATE source_connectors
+			SET status = CASE WHEN connector_key LIKE 'x:%' THEN 'active' ELSE 'paused' END
+		`).run();
+		await expect(new D1SourceCatalog(env.DB, searchConfig).list())
+			.rejects.toThrow('requires X_API_BEARER_TOKEN');
+		const xConfig = getConfig({ ...env, X_API_BEARER_TOKEN: 'x-token' } as Env);
+		await expect(new D1SourceCatalog(env.DB, xConfig).list()).resolves.toEqual([
+			expect.objectContaining({
+				sourceId: 'x:subscription:openai',
+				config: expect.objectContaining({
+					bearerToken: 'x-token',
+					userName: 'OpenAI',
+				}),
+			}),
+		]);
+	});
 });
 
 interface ConnectorSeed {
 	sourceKey: string;
-	sourceType: 'rss_feed' | 'twitter_user';
+	sourceType: 'rss_feed' | 'twitter_user' | 'twitter_search';
 	identityNamespace: string;
 	connectorKey: string;
 	providerKey: string;

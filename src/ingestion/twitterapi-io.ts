@@ -1,4 +1,7 @@
-import type { TwitterApiIoUserAdapterConfig } from '../config';
+import type {
+	TwitterApiIoSearchAdapterConfig,
+	TwitterApiIoUserAdapterConfig,
+} from '../config';
 import type { CanonicalItem, IngestionOptions } from '../domain/ingestion';
 import { parseDocument } from 'htmlparser2';
 import { hasChildren, isTag, type ChildNode } from 'domhandler';
@@ -10,13 +13,14 @@ interface TwitterApiIoAuthor {
 	userName?: unknown;
 }
 
-interface TwitterApiIoTweet {
+export interface TwitterApiIoTweet {
 	author?: TwitterApiIoAuthor | null;
 	createdAt?: unknown;
 	entities?: unknown;
 	extended_entities?: unknown;
 	extendedEntities?: unknown;
 	id?: unknown;
+	isReply?: unknown;
 	media?: unknown;
 	text?: unknown;
 	url?: unknown;
@@ -45,6 +49,29 @@ export interface TwitterApiIoBatch {
 	newestExternalId: string | null;
 	nextCursor: string | null;
 	stopReason: 'cutover' | 'end' | 'high-water' | 'page-budget';
+}
+
+export interface TwitterApiIoSearchRequest {
+	cursor: string | null;
+	minimumPublishedAt: number;
+	scheduledAt: number;
+}
+
+export interface TwitterApiIoSearchBatch {
+	completed: boolean;
+	items: CanonicalItem[];
+	newestExternalId: string | null;
+	nextCursor: string | null;
+	requestCount: number;
+	resourceCount: number;
+	billableUnitCount: number;
+	stopReason: 'end' | 'page-budget';
+}
+
+interface TwitterApiIoSearchCursor {
+	endAt: number;
+	startAt: number;
+	token: string;
 }
 
 export class TwitterApiIoError extends SourceHttpError {
@@ -102,7 +129,7 @@ export async function fetchTwitterApiIoBatch(
 				};
 			}
 
-			items.push(...await normalizeTweet(tweet, source, options));
+			items.push(...await normalizeTweet(tweet, source.userName, options));
 		}
 
 		if (!page.has_next_page) {
@@ -131,6 +158,68 @@ export async function fetchTwitterApiIoBatch(
 		items,
 		newestExternalId,
 		nextCursor,
+		stopReason: 'page-budget',
+	};
+}
+
+export async function fetchTwitterApiIoSearchBatch(
+	source: TwitterApiIoSearchAdapterConfig,
+	options: IngestionOptions,
+	request: TwitterApiIoSearchRequest,
+): Promise<TwitterApiIoSearchBatch> {
+	const continuation = decodeSearchCursor(request.cursor);
+	const startAt = continuation?.startAt ?? request.minimumPublishedAt;
+	const endAt = continuation?.endAt ?? Math.max(startAt + 1, request.scheduledAt);
+	let cursor = continuation?.token ?? '';
+	let requestCount = 0;
+	let resourceCount = 0;
+	let billableUnitCount = 0;
+	const newestExternalId = request.cursor === null
+		? `twitter-search-time:${endAt}`
+		: null;
+	const items: CanonicalItem[] = [];
+	const seenCursors = new Set<string>([cursor]);
+
+	for (let pageNumber = 0; pageNumber < source.maxPages; pageNumber += 1) {
+		const page = await fetchSearchPage(source, options, cursor, startAt, endAt);
+		requestCount += 1;
+		resourceCount += page.tweets.length;
+		billableUnitCount += Math.max(1, page.tweets.length);
+		for (const tweet of page.tweets) {
+			if (!tweetMatchesSearchSource(tweet, source)) continue;
+			items.push(...await normalizeTweet(tweet, null, options));
+		}
+
+		if (!page.has_next_page) {
+			return {
+				completed: true,
+				items,
+				newestExternalId,
+				nextCursor: null,
+				requestCount,
+				resourceCount,
+				billableUnitCount,
+				stopReason: 'end',
+			};
+		}
+		if (!page.next_cursor) {
+			throw new Error('TwitterAPI.io search indicated another page without a cursor');
+		}
+		if (seenCursors.has(page.next_cursor)) {
+			throw new Error('TwitterAPI.io search returned a repeated pagination cursor');
+		}
+		seenCursors.add(page.next_cursor);
+		cursor = page.next_cursor;
+	}
+
+	return {
+		completed: false,
+		items,
+		newestExternalId,
+		nextCursor: encodeSearchCursor({ endAt, startAt, token: cursor }),
+		requestCount,
+		resourceCount,
+		billableUnitCount,
 		stopReason: 'page-budget',
 	};
 }
@@ -191,9 +280,57 @@ async function fetchPage(
 	};
 }
 
+async function fetchSearchPage(
+	source: TwitterApiIoSearchAdapterConfig,
+	options: IngestionOptions,
+	cursor: string,
+	startAt: number,
+	endAt: number,
+): Promise<TwitterApiIoPage> {
+	const url = new URL(source.endpoint);
+	url.searchParams.set('query', twitterApiIoSearchQuery(source, startAt, endAt));
+	url.searchParams.set('queryType', 'Latest');
+	url.searchParams.set('cursor', cursor);
+
+	const response = await fetch(url, {
+		headers: {
+			accept: 'application/json',
+			'X-API-Key': source.apiKey,
+		},
+		signal: AbortSignal.timeout(options.feedTimeoutMs),
+	});
+	const body = await readBodyWithLimit(response, options.maxFeedBytes);
+	const payload = tryParseJsonObject(body);
+	if (!response.ok) {
+		const retryAfterSeconds = parseRetryAfter(response.headers.get('retry-after'));
+		throw new TwitterApiIoError(
+			`TwitterAPI.io search failed with HTTP ${response.status}${errorSuffix(payload ?? {})}`,
+			response.status,
+			retryAfterSeconds,
+		);
+	}
+	if (!payload) throw new Error('TwitterAPI.io search returned invalid JSON');
+	const responseBody = objectValue(payload.data) ?? payload;
+	if (payload.status === 'error' || responseBody.status === 'error') {
+		throw new TwitterApiIoError(
+			`TwitterAPI.io search returned an application error${errorSuffix(responseBody) || errorSuffix(payload)}`,
+			response.status,
+			null,
+		);
+	}
+	if (!Array.isArray(responseBody.tweets)) {
+		throw new Error('TwitterAPI.io search response is missing tweets');
+	}
+	return {
+		tweets: responseBody.tweets.filter(isObject),
+		has_next_page: responseBody.has_next_page === true,
+		next_cursor: stringValue(responseBody.next_cursor) ?? '',
+	};
+}
+
 async function normalizeTweet(
 	tweet: TwitterApiIoTweet,
-	source: TwitterApiIoUserAdapterConfig,
+	fallbackUserName: string | null,
 	options: IngestionOptions,
 ): Promise<CanonicalItem[]> {
 	const id = stringValue(tweet.id);
@@ -213,7 +350,7 @@ async function normalizeTweet(
 	}
 
 	const author = objectValue(tweet.author) as TwitterApiIoAuthor | null;
-	const userName = normalizedUserName(author?.userName) ?? source.userName;
+	const userName = normalizedUserName(author?.userName) ?? fallbackUserName;
 	const rawLink = validHttpUrl(tweet.url)
 		?? (userName
 			? `https://x.com/${encodeURIComponent(userName)}/status/${id}`
@@ -238,6 +375,53 @@ async function normalizeTweet(
 			parser: 'twitter',
 		},
 	}];
+}
+
+function twitterApiIoSearchQuery(
+	source: TwitterApiIoSearchAdapterConfig,
+	startAt: number,
+	endAt: number,
+): string {
+	const accounts = source.handles.map((handle) => `from:${handle}`).join(' OR ');
+	return [
+		`(${accounts})`,
+		source.includeReplies ? '' : '-filter:replies',
+		`since_time:${Math.max(0, startAt)}`,
+		`until_time:${Math.max(startAt + 1, endAt)}`,
+	].filter(Boolean).join(' ');
+}
+
+function tweetMatchesSearchSource(
+	tweet: TwitterApiIoTweet,
+	source: TwitterApiIoSearchAdapterConfig,
+): boolean {
+	const author = objectValue(tweet.author) as TwitterApiIoAuthor | null;
+	const userName = normalizedUserName(author?.userName)?.toLowerCase();
+	if (!userName || !source.handles.some((handle) => handle.toLowerCase() === userName)) {
+		return false;
+	}
+	return source.includeReplies || tweet.isReply !== true;
+}
+
+function encodeSearchCursor(cursor: TwitterApiIoSearchCursor): string {
+	return JSON.stringify(cursor);
+}
+
+function decodeSearchCursor(value: string | null): TwitterApiIoSearchCursor | null {
+	if (value === null) return null;
+	try {
+		const parsed: unknown = JSON.parse(value);
+		if (!isObject(parsed)) throw new Error('not an object');
+		const token = stringValue(parsed.token);
+		const startAt = nonNegativeInteger(parsed.startAt);
+		const endAt = nonNegativeInteger(parsed.endAt);
+		if (!token || startAt === null || endAt === null || endAt <= startAt) {
+			throw new Error('invalid fields');
+		}
+		return { endAt, startAt, token };
+	} catch (error) {
+		throw new Error('TwitterAPI.io search checkpoint cursor is invalid', { cause: error });
+	}
 }
 
 async function fetchTweetPhotoPage(
@@ -547,6 +731,12 @@ function objectValue(value: unknown): Record<string, unknown> | null {
 
 function stringValue(value: unknown): string | null {
 	return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+	return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+		? value
+		: null;
 }
 
 function normalizedUserName(value: unknown): string | null {

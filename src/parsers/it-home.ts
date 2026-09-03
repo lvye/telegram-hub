@@ -1,4 +1,5 @@
 import { renderHtmlForTelegram } from '../delivery/telegram-html-serializer';
+import { ARTICLE_DESCRIPTION_MAX_LENGTH } from '../delivery/telegram-message-limits';
 import { XMLParser } from '../utils/xml-parser';
 import type { ParsedFeedItem } from './types';
 
@@ -8,7 +9,7 @@ export function itHomeParser(content: string): ParsedFeedItem[] {
 	try {
 		return XMLParser.parseRSS(content).map((item) => {
 			const description = renderHtmlForTelegram(item.description, {
-				maxTextLength: 400,
+				maxTextLength: ARTICLE_DESCRIPTION_MAX_LENGTH,
 				transformText: (text) => text.replace(IT_HOME_DATELINE, ''),
 			});
 

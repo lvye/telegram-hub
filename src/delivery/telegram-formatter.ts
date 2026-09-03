@@ -2,6 +2,7 @@ import type { DeliveryDestinationConfig } from '../config';
 import type { DeliveryLease } from '../domain/delivery';
 import { safeHttpUrl } from '../utils/http-url';
 import { renderHtmlForTelegram } from './telegram-html-serializer';
+import { ARTICLE_DESCRIPTION_MAX_LENGTH } from './telegram-message-limits';
 
 export function formatTelegramMessage(
 	delivery: DeliveryLease,
@@ -18,7 +19,7 @@ export function formatTelegramMessage(
 		delivery.title ? `<b>${escapeHtml(delivery.title)}</b>` : '',
 		delivery.formattedDescription
 			? renderHtmlForTelegram(delivery.formattedDescription, {
-				maxTextLength: 400,
+				maxTextLength: ARTICLE_DESCRIPTION_MAX_LENGTH,
 				preserveLineBreaks: true,
 			}).html
 			: delivery.description ? escapeHtml(delivery.description) : '',

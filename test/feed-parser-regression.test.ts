@@ -73,6 +73,21 @@ describe('feed parser regressions', () => {
 		});
 	});
 
+	it('limits IT Home descriptions to 200 code points plus an ellipsis', () => {
+		const [item] = itHomeParser(`
+			<rss><channel><item>
+				<guid>long-it-home-article</guid>
+				<title>Long article</title>
+				<link>https://example.com/long-article</link>
+				<description><![CDATA[<p>${'正'.repeat(250)}</p>]]></description>
+			</item></channel></rss>
+		`);
+
+		expect([...item.description]).toHaveLength(201);
+		expect(item.description).toBe(`${'正'.repeat(200)}…`);
+		expect(item.formattedDescription).toBe(`${'正'.repeat(200)}…`);
+	});
+
 	it('extracts namespaced Twitter author and image without raw XML regexes', () => {
 		const [item] = twitterParser(`
 			<rss

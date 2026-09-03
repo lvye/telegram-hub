@@ -87,6 +87,16 @@ describe('formatTelegramMessage', () => {
 		].join('\n\n'));
 	});
 
+	it('limits previously stored article descriptions to 200 code points at delivery', () => {
+		expect(formatTelegramMessage({
+			...DELIVERY,
+			title: null,
+			description: '正'.repeat(400),
+			formattedDescription: `<b>${'正'.repeat(400)}</b>`,
+			link: null,
+		}, ARTICLE_DESTINATION)).toBe(`<b>${'正'.repeat(200)}…</b>`);
+	});
+
 	it('drops non-http links from untrusted feed data', () => {
 		expect(formatTelegramMessage({
 			...DELIVERY,

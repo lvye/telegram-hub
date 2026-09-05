@@ -73,7 +73,7 @@ describe('feed parser regressions', () => {
 		});
 	});
 
-	it('limits IT Home descriptions to 200 code points plus an ellipsis', () => {
+	it('limits IT Home descriptions to 160 code points plus an ellipsis', () => {
 		const [item] = itHomeParser(`
 			<rss><channel><item>
 				<guid>long-it-home-article</guid>
@@ -83,9 +83,9 @@ describe('feed parser regressions', () => {
 			</item></channel></rss>
 		`);
 
-		expect([...item.description]).toHaveLength(201);
-		expect(item.description).toBe(`${'正'.repeat(200)}…`);
-		expect(item.formattedDescription).toBe(`${'正'.repeat(200)}…`);
+		expect([...item.description]).toHaveLength(161);
+		expect(item.description).toBe(`${'正'.repeat(160)}…`);
+		expect(item.formattedDescription).toBe(`${'正'.repeat(160)}…`);
 	});
 
 	it('extracts namespaced Twitter author and image without raw XML regexes', () => {

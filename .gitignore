@@ -173,5 +173,10 @@ dist
 .env*
 .wrangler/
 
-# Claude Code
-.claude/
+# Claude Code: share the verify entry point; keep local settings ignored.
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/verify/
+.claude/skills/verify/*
+!.claude/skills/verify/SKILL.md

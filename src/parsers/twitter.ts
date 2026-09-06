@@ -48,7 +48,8 @@ function descriptionImageUrls(description: string): string[] {
 }
 
 function truncateText(value: string, maxLength: number): string {
-	const codePoints = [...value];
+	// Preserve the feed description budget in Unicode code points.
+	const codePoints = Array.from(value);
 	return codePoints.length <= maxLength
 		? value
 		: `${codePoints.slice(0, maxLength).join('')}…`;

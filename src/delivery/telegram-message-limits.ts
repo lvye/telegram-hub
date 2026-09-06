@@ -7,7 +7,8 @@ export const TELEGRAM_CAPTION_MAX_LENGTH = 1_024;
 /** Limits decoded text, including the ellipsis, while preserving valid HTML. */
 export function limitTelegramHtml(input: string, maxLength: number): string {
 	const rendered = renderHtmlForTelegram(input, { preserveLineBreaks: true });
-	if ([...rendered.text].length <= maxLength) return rendered.html;
+	// Telegram limits count Unicode code points, not UTF-16 units or grapheme clusters.
+	if (Array.from(rendered.text).length <= maxLength) return rendered.html;
 	if (maxLength <= 0) return '';
 	return renderHtmlForTelegram(rendered.html, {
 		// The serializer appends an ellipsis outside its content budget.

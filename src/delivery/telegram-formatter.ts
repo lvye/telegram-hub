@@ -37,7 +37,8 @@ export function formatTelegramMessage(
 function withSourceLink(body: string, link: string, maxLength: number, author = ''): string {
 	const linkLength = renderHtmlForTelegram(link).text.length;
 	const footer = limitTelegramHtml(author, maxLength - linkLength - 2) + (author && link ? ' ' : '') + link;
-	const footerLength = [...renderHtmlForTelegram(footer, { preserveLineBreaks: true }).text].length;
+	// Use the same code-point budget as the message limiter.
+	const footerLength = Array.from(renderHtmlForTelegram(footer, { preserveLineBreaks: true }).text).length;
 	const limitedBody = limitTelegramHtml(body, maxLength - footerLength - (footer ? 2 : 0));
 	return [limitedBody, footer].filter(Boolean).join('\n\n');
 }

@@ -433,7 +433,8 @@ function truncateTelegramHtml(html: string, maxTextLength: number): TelegramHtml
 		},
 		ontext(value) {
 			if (truncated) return;
-			const codePoints = [...value];
+			// Slice by code points so surrogate pairs stay intact.
+			const codePoints = Array.from(value);
 			const accepted = codePoints.slice(0, remaining).join('');
 			text += accepted;
 			renderedHtml += escapeHtml(accepted);
@@ -479,7 +480,7 @@ function safeHttpUrl(value: string | undefined): string | null {
 }
 
 function countCodePoints(value: string): number {
-	return [...value].length;
+	return Array.from(value).length;
 }
 
 function escapeHtml(value: string): string {

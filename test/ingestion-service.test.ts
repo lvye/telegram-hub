@@ -177,30 +177,21 @@ describe('IngestionService', () => {
 		expect(commit).toHaveBeenCalledWith(NOW);
 	});
 
-	it('rejects a non-positive item limit', async () => {
-		const invalid = {
+	it.each<[number, string]>([
+		[0, 'itemLimit must be a positive integer'],
+		[51, 'itemLimit 51 exceeds configured maximum 50'],
+	])('rejects an adapter itemLimit of %i without persisting content', async (itemLimit, message) => {
+		const invalid: IngestionBatch = {
 			items: [item('invalid', 1)],
-			itemLimit: 0,
+			itemLimit,
 			checkpoint: null,
 			telemetry: { provider: 'fake' },
-		} as unknown as IngestionBatch;
+		};
 
 		await expect(serviceFor(invalid).ingest(SOURCE, OPTIONS, NOW, 'run'))
-			.rejects.toThrow('itemLimit must be a positive integer');
+			.rejects.toThrow(message);
 		const count = await env.DB.prepare('SELECT COUNT(*) AS count FROM content_items').first();
 		expect(count).toEqual({ count: 0 });
-	});
-
-	it('rejects an adapter item limit above the configured write budget', async () => {
-		const invalid = {
-			items: [item('invalid', 1)],
-			itemLimit: 51,
-			checkpoint: null,
-			telemetry: { provider: 'fake' },
-		} as IngestionBatch;
-
-		await expect(serviceFor(invalid).ingest(SOURCE, OPTIONS, NOW, 'run'))
-			.rejects.toThrow('itemLimit 51 exceeds configured maximum 50');
 	});
 
 	function serviceFor(batch: IngestionBatch): IngestionService {

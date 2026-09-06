@@ -7,9 +7,7 @@ import type {
 } from '../ingestion/twitter-api-checkpoint';
 import type { IngestionRepository } from './ingestion-repository';
 
-export class D1TwitterApiIoCheckpointStore implements
-	TwitterApiIoCheckpointStore,
-	SourceProviderMetadataStore {
+export class D1TwitterApiIoCheckpointStore implements TwitterApiIoCheckpointStore, SourceProviderMetadataStore {
 	constructor(private readonly repository: IngestionRepository) {}
 
 	getOrCreate(request: TwitterApiIoCheckpointRequest): Promise<TwitterApiIoCheckpoint> {

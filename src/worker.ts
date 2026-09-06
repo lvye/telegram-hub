@@ -8,7 +8,7 @@ import { consumeDeadLetterBatch, consumeDeliveryBatch } from './delivery/consume
 import { dispatchReadyDeliveries } from './delivery/dispatcher';
 import type { DeliveryJob } from './domain/delivery';
 import type { IngestionJob } from './domain/ingestion';
-import { sourceReadiness, logSourceReadiness } from './health/readiness';
+import { logSourceReadiness, sourceReadiness } from './health/readiness';
 import {
 	consumeIngestionBatch,
 	consumeIngestionDeadLetterBatch,

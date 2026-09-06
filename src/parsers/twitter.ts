@@ -1,7 +1,7 @@
-import { renderHtmlForTelegram } from '../delivery/telegram-html-serializer';
-import { XMLParser } from '../utils/xml-parser';
 import { parseDocument } from 'htmlparser2';
 import { hasChildren, isTag, type ChildNode } from 'domhandler';
+import { renderHtmlForTelegram } from '../delivery/telegram-html-serializer';
+import { XMLParser } from '../utils/xml-parser';
 import type { ParsedFeedItem } from './types';
 
 export function twitterParser(content: string): ParsedFeedItem[] {

@@ -57,14 +57,20 @@ describe('SourceRuntimeStateRepository', () => {
 			status: 'backoff', consecutiveFailures: 1, lastErrorCode: 'HTTP_503',
 		});
 
-		await repository.acquireLease('rss:it_home', 'lease-2', NOW + 60, 300);
-		await repository.markSucceeded('rss:it_home', 'lease-2', NOW + 120, NOW + 60);
+		await expect(repository.claimForQueue('rss:it_home', 'queue-2', NOW + 60, 300))
+			.resolves.toBe(true);
+		await expect(repository.acquireQueuedLease('rss:it_home', 'queue-2', 'lease-2', NOW + 60, 300))
+			.resolves.toBe(true);
+		await expect(repository.markSucceeded('rss:it_home', 'stale-lease', NOW + 120, NOW + 60))
+			.resolves.toBe(false);
+		await expect(repository.markSucceeded('rss:it_home', 'lease-2', NOW + 120, NOW + 60))
+			.resolves.toBe(true);
 		await expect(repository.get('rss:it_home')).resolves.toMatchObject({
 			status: 'idle', consecutiveFailures: 0, lastErrorCode: null,
 		});
 	});
 
-	it('recovers eligible blocked and dead sources in one operation', async () => {
+	it('recovers blocked and dead sources only after each cooldown elapses', async () => {
 		await repository.claimForQueue('rss:it_home', 'dead-queue', NOW, 300);
 		await repository.reconcileDeadLetter('rss:it_home', 'dead-queue', NOW);
 		await repository.claimForQueue('rss:twitter', 'blocked-queue', NOW, 300);
@@ -83,17 +89,23 @@ describe('SourceRuntimeStateRepository', () => {
 			NOW,
 		);
 
+		await expect(repository.recoverEligibleSources(NOW + 3_599, 21_600, 3_600))
+			.resolves.toBe(0);
 		await expect(repository.recoverEligibleSources(NOW + 3_600, 21_600, 3_600))
 			.resolves.toBe(1);
 		await expect(repository.get('rss:twitter')).resolves.toMatchObject({
 			status: 'backoff',
+			nextPollAt: NOW + 3_600,
 			lastErrorCode: 'INGESTION_BLOCKED_RECOVERY',
 		});
 		await expect(repository.get('rss:it_home')).resolves.toMatchObject({ status: 'dead' });
+		await expect(repository.recoverEligibleSources(NOW + 21_599, 21_600, 3_600))
+			.resolves.toBe(0);
 		await expect(repository.recoverEligibleSources(NOW + 21_600, 21_600, 3_600))
 			.resolves.toBe(1);
 		await expect(repository.get('rss:it_home')).resolves.toMatchObject({
 			status: 'backoff',
+			nextPollAt: NOW + 21_600,
 			lastErrorCode: 'INGESTION_DLQ_RECOVERY',
 		});
 	});

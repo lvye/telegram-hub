@@ -1,6 +1,5 @@
 import type { ParserName } from './parsers/types';
 
-export const DELIVERY_QUEUE_NAME = 'telegram-delivery';
 export const DELIVERY_DLQ_NAME = 'telegram-delivery-dlq';
 export const INGESTION_QUEUE_NAME = 'source-ingestion';
 export const INGESTION_DLQ_NAME = 'source-ingestion-dlq';

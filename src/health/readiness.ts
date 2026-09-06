@@ -1,6 +1,8 @@
 import type { AppConfig } from '../config';
-import type { SourceReadinessIssue } from '../persistence/source-runtime-state-repository';
-import { SourceRuntimeStateRepository } from '../persistence/source-runtime-state-repository';
+import {
+	SourceRuntimeStateRepository,
+	type SourceReadinessIssue,
+} from '../persistence/source-runtime-state-repository';
 
 export interface ReadinessSnapshot {
 	status: 'not_ready' | 'ready';

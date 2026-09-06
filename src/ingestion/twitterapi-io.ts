@@ -1,10 +1,10 @@
+import { parseDocument } from 'htmlparser2';
+import { hasChildren, isTag, type ChildNode } from 'domhandler';
 import type {
 	TwitterApiIoSearchAdapterConfig,
 	TwitterApiIoUserAdapterConfig,
 } from '../config';
 import type { CanonicalItem, IngestionOptions } from '../domain/ingestion';
-import { parseDocument } from 'htmlparser2';
-import { hasChildren, isTag, type ChildNode } from 'domhandler';
 import { parseRetryAfter, SourceHttpError } from './source-http-error';
 
 interface TwitterApiIoAuthor {

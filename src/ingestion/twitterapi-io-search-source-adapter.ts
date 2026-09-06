@@ -18,8 +18,7 @@ import {
 export const TWITTER_API_IO_SEARCH_ADAPTER_KEY = 'twitterapi-io.search';
 const TWITTER_API_IO_TWEET_READ_USD_MICROS = 150;
 
-export class TwitterApiIoSearchSourceAdapter implements
-	SourceAdapter<TwitterApiIoSearchAdapterConfig> {
+export class TwitterApiIoSearchSourceAdapter implements SourceAdapter<TwitterApiIoSearchAdapterConfig> {
 	readonly key = TWITTER_API_IO_SEARCH_ADAPTER_KEY;
 
 	constructor(

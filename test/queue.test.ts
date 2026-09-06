@@ -5,9 +5,9 @@ import {
 	getQueueResult,
 } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getConfig } from '../src/config';
 import type { DeliveryJob } from '../src/domain/delivery';
 import type { CanonicalItem } from '../src/domain/ingestion';
-import { getConfig } from '../src/config';
 import { DeliveryRepository } from '../src/persistence/delivery-repository';
 import worker from '../src/worker';
 import { resetDatabase, seedDefaultTopology, seedDestination } from './d1-fixtures';

@@ -1,5 +1,4 @@
-import type { AppConfig } from '../src/config';
-import { normalizeDestinationKey } from '../src/config';
+import { normalizeDestinationKey, type AppConfig } from '../src/config';
 import { RSS_SOURCE_ADAPTER_KEY } from '../src/ingestion/rss-source-adapter';
 
 export async function resetDatabase(db: D1Database): Promise<void> {

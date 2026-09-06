@@ -191,33 +191,6 @@ describe('ingestion queue consumer', () => {
 		});
 	});
 
-	it('recovers a dead-lettered source after the configured cooldown', async () => {
-		const job = await claimedJob();
-		await runtime.reconcileDeadLetter(SOURCE_ID, job.queueToken, NOW);
-
-		await expect(runtime.recoverDeadSources(NOW + 21_599, 21_600)).resolves.toBe(0);
-		await expect(runtime.recoverDeadSources(NOW + 21_600, 21_600)).resolves.toBe(1);
-		expect(await runtime.get(SOURCE_ID)).toMatchObject({
-			status: 'backoff',
-			nextPollAt: NOW + 21_600,
-			lastErrorCode: 'INGESTION_DLQ_RECOVERY',
-		});
-	});
-
-	it('retries a blocked source after its longer recovery cooldown', async () => {
-		const job = await claimedJob();
-		await runtime.acquireQueuedLease(SOURCE_ID, job.queueToken, 'lease', NOW, 300);
-		await runtime.markBlocked(SOURCE_ID, 'lease', 'SOURCE_HTTP_404', 'missing', NOW);
-
-		await expect(runtime.recoverBlockedSources(NOW + 3_599, 3_600)).resolves.toBe(0);
-		await expect(runtime.recoverBlockedSources(NOW + 3_600, 3_600)).resolves.toBe(1);
-		expect(await runtime.get(SOURCE_ID)).toMatchObject({
-			status: 'backoff',
-			nextPollAt: NOW + 3_600,
-			lastErrorCode: 'INGESTION_BLOCKED_RECOVERY',
-		});
-	});
-
 	it('runs through the configured queues and dispatches new deliveries without a cron sweep', async () => {
 		const job = await claimedJob();
 		vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {

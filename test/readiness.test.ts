@@ -86,15 +86,15 @@ describe('source readiness', () => {
 
 	it('reports a source that stopped succeeding after its cadence threshold', async () => {
 		await syncSources();
-		await runtime.acquireLease('rss:it_home', 'lease', NOW, 300);
+		await expect(runtime.claimForQueue('rss:it_home', 'queue', NOW, 300)).resolves.toBe(true);
+		await expect(runtime.acquireQueuedLease('rss:it_home', 'queue', 'lease', NOW, 300))
+			.resolves.toBe(true);
 		await expect(runtime.markSucceeded('rss:it_home', 'lease', NOW + 60, NOW)).resolves.toBe(true);
 		expect(await runtime.get('rss:it_home')).toMatchObject({
 			lastSuccessAt: NOW,
 			pollEverySeconds: 60,
 		});
 
-		const config = getConfig(workerEnv());
-		config.ingestion.readinessMinimumSeconds = 60;
 		const issues = await runtime.listReadinessIssues(NOW + 61, 60, 1);
 		expect(issues).toContainEqual(expect.objectContaining({
 			sourceId: 'rss:it_home',

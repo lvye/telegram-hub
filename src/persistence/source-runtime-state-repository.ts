@@ -3,7 +3,6 @@ export type SourceRuntimeStatus =
 	| 'blocked'
 	| 'dead'
 	| 'idle'
-	| 'paused'
 	| 'queued'
 	| 'running';
 
@@ -88,38 +87,6 @@ export class SourceRuntimeStateRepository {
 			ON CONFLICT (connector_id) DO NOTHING
 		`).bind(scheduledAt, scheduledAt, scheduledAt).run();
 		return result.meta.changes ?? 0;
-	}
-
-	async acquireLease(
-		sourceId: string,
-		leaseToken: string,
-		now: number,
-		leaseSeconds: number,
-	): Promise<boolean> {
-		const result = await this.db.prepare(`
-			UPDATE source_connector_state
-			SET
-				state = 'running',
-				claim_token = ?,
-				claimed_at = ?,
-				claim_expires_at = ?,
-				last_attempt_at = ?,
-				updated_at = ?
-			WHERE connector_id = (${activeConnectorIdSelect()})
-				AND (
-					state = 'idle'
-					OR (state = 'running' AND claim_expires_at <= ?)
-				)
-		`).bind(
-			leaseToken,
-			now,
-			now + leaseSeconds,
-			now,
-			now,
-			sourceId,
-			now,
-		).run();
-		return (result.meta.changes ?? 0) === 1;
 	}
 
 	async listDueSourceIds(now: number, limit = 100): Promise<string[]> {
@@ -402,14 +369,6 @@ export class SourceRuntimeStateRepository {
 		);
 	}
 
-	async recoverDeadSources(now: number, cooldownSeconds: number): Promise<number> {
-		return this.recover('dead', now, cooldownSeconds, 'INGESTION_DLQ_RECOVERY');
-	}
-
-	async recoverBlockedSources(now: number, cooldownSeconds: number): Promise<number> {
-		return this.recover('blocked', now, cooldownSeconds, 'INGESTION_BLOCKED_RECOVERY');
-	}
-
 	async recoverEligibleSources(
 		now: number,
 		deadCooldownSeconds: number,
@@ -579,25 +538,6 @@ export class SourceRuntimeStateRepository {
 			leaseToken,
 		).run();
 		return (result.meta.changes ?? 0) === 1;
-	}
-
-	private async recover(
-		state: 'blocked' | 'dead',
-		now: number,
-		cooldownSeconds: number,
-		errorCode: string,
-	): Promise<number> {
-		const result = await this.db.prepare(`
-			UPDATE source_connector_state
-			SET
-				state = 'idle',
-				next_run_at = ?,
-				last_error_code = ?,
-				last_error = 'Retrying source after recovery cooldown',
-				updated_at = ?
-			WHERE state = ? AND updated_at <= ?
-		`).bind(now, errorCode, now, state, now - cooldownSeconds).run();
-		return result.meta.changes ?? 0;
 	}
 }
 

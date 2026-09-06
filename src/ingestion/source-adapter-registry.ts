@@ -6,7 +6,6 @@ import type {
 } from '../domain/ingestion';
 
 interface RegisteredSourceAdapter {
-	key: string;
 	load(source: SourceDefinition, context: SourceAdapterContext): Promise<IngestionBatch>;
 }
 
@@ -20,7 +19,6 @@ export class SourceAdapterRegistry {
 		}
 
 		this.adapters.set(adapter.key, {
-			key: adapter.key,
 			load: (source, context) => adapter.load({
 				...source,
 				config: adapter.decodeConfig(source.config),

@@ -1,5 +1,7 @@
+import type { TelegramParseMode } from '../config';
 import { safeHttpUrl } from '../utils/http-url';
 import { PermanentDeliveryError, RetryableDeliveryError } from './errors';
+import { limitTelegramHtml, TELEGRAM_CAPTION_MAX_LENGTH, TELEGRAM_MESSAGE_MAX_LENGTH } from './telegram-message-limits';
 
 interface TelegramResponse {
 	ok?: boolean;
@@ -26,13 +28,13 @@ export class TelegramClient {
 	async sendMessage(
 		chatId: string,
 		message: string,
-		parseMode: string,
+		parseMode: TelegramParseMode,
 		linkPreviewUrl: string | null = null,
 	): Promise<TelegramSendResult> {
 		const previewUrl = safeHttpUrl(linkPreviewUrl);
 		return this.request('sendMessage', {
 			chat_id: chatId,
-			text: message,
+			text: limitTelegramHtml(message, TELEGRAM_MESSAGE_MAX_LENGTH),
 			parse_mode: parseMode,
 			...(previewUrl ? { link_preview_options: { url: previewUrl } } : {}),
 		});
@@ -42,12 +44,12 @@ export class TelegramClient {
 		chatId: string,
 		photo: string,
 		caption: string,
-		parseMode: string,
+		parseMode: TelegramParseMode,
 	): Promise<TelegramSendResult> {
 		return this.request('sendPhoto', {
 			chat_id: chatId,
 			photo,
-			caption,
+			caption: limitTelegramHtml(caption, TELEGRAM_CAPTION_MAX_LENGTH),
 			parse_mode: parseMode,
 		});
 	}

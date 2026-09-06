@@ -23,7 +23,6 @@ const X_USER_READ_USD_MICROS = 10_000;
 interface XOfficialPost {
 	attachments?: unknown;
 	created_at?: unknown;
-	entities?: unknown;
 	id?: unknown;
 	note_tweet?: unknown;
 	text?: unknown;
@@ -189,7 +188,7 @@ export async function fetchXOfficialBatch(
 	for (let pageNumber = 0; pageNumber < source.maxPages; pageNumber += 1) {
 		const url = xApiUrl(source.endpoint, `users/${encodeURIComponent(userId)}/tweets`);
 		url.searchParams.set('max_results', '100');
-		url.searchParams.set('tweet.fields', 'attachments,created_at,entities,note_tweet');
+		url.searchParams.set('tweet.fields', 'attachments,created_at,note_tweet');
 		url.searchParams.set('expansions', 'attachments.media_keys');
 		url.searchParams.set('media.fields', 'media_key,preview_image_url,type,url');
 		if (!source.includeReplies) url.searchParams.set('exclude', 'replies');

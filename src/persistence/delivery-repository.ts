@@ -675,7 +675,8 @@ export class DeliveryRepository implements IngestionRepository {
 				next_attempt_at = ?, last_error_code = 'DELIVERY_QUEUE_RETRY',
 				last_error = 'Retrying delivery after Queue DLQ reconciliation', updated_at = ?
 			WHERE id = ? AND state IN ('pending', 'queued', 'sending')
-		`).bind(now, now, deliveryId).run();
+				AND (state <> 'sending' OR lease_expires_at <= ?)
+		`).bind(now, now, deliveryId, now).run();
 		return (result.meta.changes ?? 0) === 1 ? 'retry' : null;
 	}
 

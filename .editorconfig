@@ -9,5 +9,6 @@ charset = utf-8
 trim_trailing_whitespace = true
 insert_final_newline = true
 
-[*.yml]
+[{*.yml,*.yaml,*.json,*.jsonc,vitest.config.ts}]
 indent_style = space
+indent_size = 2

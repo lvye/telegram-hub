@@ -80,6 +80,7 @@ describe('X official API client', () => {
 		expect(url.searchParams.get('since_id')).toBe('199');
 		expect(url.searchParams.get('exclude')).toBe('replies');
 		expect(url.searchParams.get('max_results')).toBe('100');
+		expect(url.searchParams.get('tweet.fields')).toBe('attachments,created_at,note_tweet');
 		expect(batch).toMatchObject({ requestCount: 1, resourceCount: 1 });
 		expect(batch.items).toEqual([{
 			externalId: 'twitter:200',
@@ -107,7 +108,9 @@ describe('X official API client', () => {
 			commit: vi.fn(async () => undefined),
 		};
 		const metadata: SourceProviderMetadataStore = {
-			getMetadata: vi.fn(async () => ({})),
+			getMetadata: vi.fn<SourceProviderMetadataStore['getMetadata']>()
+				.mockResolvedValueOnce({})
+				.mockResolvedValue({ xOfficialUserId: '4398626122' }),
 			mergeMetadata: vi.fn(async () => undefined),
 		};
 		const resolveUserId = vi.fn(async () => '4398626122');
@@ -164,5 +167,20 @@ describe('X official API client', () => {
 				unitPriceUsdMicros: 5_000,
 			},
 		]);
+
+		const cachedBatch = await adapter.load(source, {
+			options: OPTIONS,
+			runId: 'run-2',
+			scheduledAt: 1_787_500_600,
+		});
+		expect(resolveUserId).toHaveBeenCalledTimes(1);
+		expect(metadata.mergeMetadata).toHaveBeenCalledTimes(1);
+		expect(metadata.getMetadata).toHaveBeenLastCalledWith(CONFIG.providerStateKey);
+		expect(fetchBatch).toHaveBeenLastCalledWith(CONFIG, '4398626122', OPTIONS, {
+			cursor: null,
+			sinceExternalId: 'twitter:199',
+		});
+		expect(cachedBatch.telemetry.usage?.map((usage) => usage.operationKey))
+			.toEqual(['post.timeline.read']);
 	});
 });

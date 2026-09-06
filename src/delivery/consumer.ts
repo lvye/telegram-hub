@@ -219,6 +219,8 @@ async function handleDeliveryFailure(
 		console.error({
 			event: 'telegram_delivery_dead',
 			deliveryId: lease.deliveryId,
+			sourceKey: lease.sourceKey,
+			externalId: lease.externalId,
 			attempt: lease.attemptCount,
 			errorCode,
 			error: messageText,
@@ -244,6 +246,8 @@ async function handleDeliveryFailure(
 	console.error({
 		event: 'telegram_delivery_retry',
 		deliveryId: lease.deliveryId,
+		sourceKey: lease.sourceKey,
+		externalId: lease.externalId,
 		attempt: lease.attemptCount,
 		delaySeconds,
 		errorCode,

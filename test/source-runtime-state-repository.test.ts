@@ -49,24 +49,43 @@ describe('SourceRuntimeStateRepository', () => {
 		await expect(repository.claimDueSources(NOW, 300)).resolves.toEqual([]);
 	});
 
-	it('records failure backoff and clears it after a successful attempt', async () => {
-		await repository.claimForQueue('rss:it_home', 'queue', NOW, 300);
-		await repository.acquireQueuedLease('rss:it_home', 'queue', 'lease-1', NOW, 300);
-		await repository.markFailed('rss:it_home', 'lease-1', NOW + 60, 'HTTP_503', 'down', NOW);
+	it('increments failures across queue retries and clears them after a successful attempt', async () => {
+		const claim = (await repository.claimDueSources(NOW, 300))
+			.find(({ sourceId }) => sourceId === 'rss:it_home');
+		expect(claim).toBeDefined();
+		const queueToken = claim!.queueToken;
+		await expect(repository.acquireQueuedLease('rss:it_home', queueToken, 'lease-1', NOW, 300))
+			.resolves.toBe(true);
+		await expect(repository.scheduleQueueRetry(
+			'rss:it_home', 'stale-lease', queueToken, NOW + 60, NOW + 360, 'HTTP_503', 'down', NOW,
+		)).resolves.toBe(false);
+		await expect(repository.scheduleQueueRetry(
+			'rss:it_home', 'lease-1', queueToken, NOW + 60, NOW + 360, 'HTTP_503', 'down', NOW,
+		)).resolves.toBe(true);
 		await expect(repository.get('rss:it_home')).resolves.toMatchObject({
-			status: 'backoff', consecutiveFailures: 1, lastErrorCode: 'HTTP_503',
+			status: 'queued', queueToken, nextPollAt: NOW + 60,
+			consecutiveFailures: 1, lastErrorCode: 'HTTP_503', lastError: 'down',
 		});
-
-		await expect(repository.claimForQueue('rss:it_home', 'queue-2', NOW + 60, 300))
-			.resolves.toBe(true);
-		await expect(repository.acquireQueuedLease('rss:it_home', 'queue-2', 'lease-2', NOW + 60, 300))
-			.resolves.toBe(true);
-		await expect(repository.markSucceeded('rss:it_home', 'stale-lease', NOW + 120, NOW + 60))
+		await expect(repository.acquireQueuedLease('rss:it_home', queueToken, 'early', NOW + 59, 300))
 			.resolves.toBe(false);
-		await expect(repository.markSucceeded('rss:it_home', 'lease-2', NOW + 120, NOW + 60))
+		await expect(repository.acquireQueuedLease('rss:it_home', queueToken, 'lease-2', NOW + 60, 300))
+			.resolves.toBe(true);
+		await expect(repository.scheduleQueueRetry(
+			'rss:it_home', 'lease-2', queueToken, NOW + 120, NOW + 420, 'HTTP_503', 'still down', NOW + 60,
+		)).resolves.toBe(true);
+		await expect(repository.get('rss:it_home')).resolves.toMatchObject({
+			status: 'queued', queueToken, consecutiveFailures: 2,
+		});
+		await expect(repository.acquireQueuedLease('rss:it_home', queueToken, 'lease-3', NOW + 120, 300))
+			.resolves.toBe(true);
+		await expect(repository.markSucceeded('rss:it_home', 'stale-lease', NOW + 180, NOW + 120))
+			.resolves.toBe(false);
+		await expect(repository.markSucceeded('rss:it_home', 'lease-3', NOW + 180, NOW + 120))
 			.resolves.toBe(true);
 		await expect(repository.get('rss:it_home')).resolves.toMatchObject({
-			status: 'idle', consecutiveFailures: 0, lastErrorCode: null,
+			status: 'idle', queueToken: null, leaseToken: null,
+			nextPollAt: NOW + 180, lastSuccessAt: NOW + 120,
+			consecutiveFailures: 0, lastErrorCode: null, lastError: null,
 		});
 	});
 

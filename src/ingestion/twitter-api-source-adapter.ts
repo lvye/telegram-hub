@@ -5,10 +5,6 @@ import type {
 	SourceAdapterContext,
 	SourceDefinition,
 } from '../domain/ingestion';
-import {
-	decodeRssSourceAdapterConfig,
-	loadRssCanonicalItems,
-} from './rss-source-adapter';
 import type {
 	TwitterApiIoCheckpoint,
 	TwitterApiIoCheckpointProgress,
@@ -44,65 +40,39 @@ export class TwitterApiIoUserSourceAdapter implements SourceAdapter<TwitterApiIo
 			bootstrapUserName: source.config.bootstrapUserName ?? null,
 		});
 
-		try {
-			const apiBatch = await this.fetchBatch(source.config, context.options, {
-				cursor: checkpoint.nextCursor,
-				minimumPublishedAt: checkpoint.initializedAt,
-				stopAtExternalId: checkpoint.highWaterExternalId,
-			});
-			const progress = nextApiProgress(checkpoint, apiBatch);
+		const apiBatch = await this.fetchBatch(source.config, context.options, {
+			cursor: checkpoint.nextCursor,
+			minimumPublishedAt: checkpoint.initializedAt,
+			stopAtExternalId: checkpoint.highWaterExternalId,
+		});
+		const progress = nextApiProgress(checkpoint, apiBatch);
 
-			return {
-				items: eligibleItems(apiBatch.items, checkpoint),
-				itemLimit: context.options.maxItemsPerSource,
-				checkpoint: {
-					commit: (updatedAt) => this.checkpoints.commit(
-						source.identityNamespace,
-						checkpointKey,
-						checkpoint,
-						progress,
-						updatedAt,
-					),
-				},
-				telemetry: {
-					provider: 'twitterapi-io',
-					paginationComplete: apiBatch.completed,
-					paginationStopReason: apiBatch.stopReason,
-					...(checkpoint.lastSuccessfulPollAt === null
-						? {
-							initialization: {
-								historyBoundaryAt: checkpoint.initializedAt,
-								bootstrapHighWater: checkpoint.highWaterExternalId,
-							},
-						}
-						: {}),
-				},
-			};
-		} catch (error) {
-			if (!source.config.fallback) throw error;
-			console.warn({
-				event: 'source_provider_fallback',
-				runId: context.runId,
-				sourceId: source.sourceId,
-				sourceKey: source.identityNamespace,
-				adapterKey: source.adapterKey,
-				failedProvider: 'twitterapi-io',
-				fallbackProvider: 'rss',
-				error: errorMessage(error),
-			});
-
-			const items = await loadRssCanonicalItems(
-				source.config.fallback,
-				source.identityNamespace,
-				context.options,
-			);
-			return {
-				items: eligibleItems(items, checkpoint),
-				itemLimit: context.options.maxItemsPerSource,
-				checkpoint: null,
-				telemetry: { provider: 'rss' },
-			};
-		}
+		return {
+			items: eligibleItems(apiBatch.items, checkpoint),
+			itemLimit: context.options.maxItemsPerSource,
+			checkpoint: {
+				commit: (updatedAt) => this.checkpoints.commit(
+					source.identityNamespace,
+					checkpointKey,
+					checkpoint,
+					progress,
+					updatedAt,
+				),
+			},
+			telemetry: {
+				provider: 'twitterapi-io',
+				paginationComplete: apiBatch.completed,
+				paginationStopReason: apiBatch.stopReason,
+				...(checkpoint.lastSuccessfulPollAt === null
+					? {
+						initialization: {
+							historyBoundaryAt: checkpoint.initializedAt,
+							bootstrapHighWater: checkpoint.highWaterExternalId,
+						},
+					}
+					: {}),
+			},
+		};
 	}
 }
 
@@ -137,9 +107,6 @@ export function decodeTwitterApiIoUserAdapterConfig(
 		userName,
 		includeReplies: config.includeReplies,
 		maxPages: config.maxPages,
-		fallback: config.fallback === null
-			? null
-			: decodeRssSourceAdapterConfig(config.fallback),
 		providerStateKey: optionalString(config.providerStateKey, 'providerStateKey'),
 		initializationAt: optionalNonNegativeInteger(config.initializationAt, 'initializationAt'),
 		bootstrapUserName: optionalString(config.bootstrapUserName, 'bootstrapUserName'),
@@ -187,10 +154,6 @@ function nextApiProgress(
 		nextCursor: null,
 		pendingHighWaterExternalId: null,
 	};
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -101,7 +101,6 @@ export class D1SourceCatalog implements SourceCatalog {
 					apiKey: this.config.twitterApiIo.apiKey,
 					bootstrapUserName: optionalString(stored.userName) ?? undefined,
 					endpoint: requiredString(stored.endpoint, 'endpoint', row.source_id),
-					fallback: null,
 					includeReplies: Boolean(stored.includeReplies),
 					initializationAt: row.initialized_at,
 					maxPages: requiredInteger(stored.maxPages, 'maxPages', row.source_id),

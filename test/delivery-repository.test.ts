@@ -285,6 +285,25 @@ describe('DeliveryRepository', () => {
 		await expect(repository.claimDispatchable(NOW + 1)).resolves.toEqual([]);
 	});
 
+	it('preserves a lease acquired between the DLQ read and update', async () => {
+		await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [item('dlq-race')], NOW);
+		const [deliveryId] = await repository.claimDispatchable(NOW);
+		class RacingRepository extends DeliveryRepository {
+			override async getState(id: number) {
+				const observed = await super.getState(id);
+				expect(observed?.status).toBe('queued');
+				await expect(repository.acquireLease(id, 'new-lease', NOW)).resolves.not.toBeNull();
+				return observed;
+			}
+		}
+
+		await expect(new RacingRepository(env.DB).reconcileDeadLetter(deliveryId, 5, NOW)).resolves.toBeNull();
+		await expect(repository.getState(deliveryId)).resolves.toMatchObject({
+			status: 'sending', attemptCount: 1, leaseExpiresAt: NOW + 120,
+		});
+		await expect(repository.markSent(deliveryId, 'new-lease', 'message-race', NOW + 1)).resolves.toBe(true);
+	});
+
 	it('claims dispatchable deliveries exactly once and releases failed claims', async () => {
 		await repository.upsertItems('rss:it-home', 'telegram:IT_HOME', [item('claim-once')], NOW);
 

@@ -27,7 +27,7 @@ The Worker only exposes read-only `GET /health` and `GET /health/ready` endpoint
 - `source_connector_state` stores provider-neutral cadence, leases, consecutive failures, and next-poll state; `source_connector_checkpoints` stores provider checkpoints
 - Cron atomically claims due sources from runtime state; the ingestion consumer point-loads only the claimed Catalog entry and uses queue tokens and source leases to reject duplicate or expired jobs
 - Source 429/5xx failures combine `Retry-After`, exponential backoff, and jitter; permanent 4xx failures become `blocked`, exhausted ingestion DLQ jobs become `dead`, and both probe recovery after their configured cooldowns
-- RSS, TwitterAPI.io, and X API adapters emit provider-neutral `CanonicalItem` batches; one ingestion service owns deduplication, persistence, and checkpoint commits
+- RSS, Nitter, TwitterAPI.io, and X API adapters emit provider-neutral `CanonicalItem` batches; one ingestion service owns deduplication, persistence, and checkpoint commits
 - Telegram chat IDs, parse mode, and message format live in destination configuration rather than discovery sources
 - `(identity_namespace, canonical_id)` plus independent `item_identities` instead of a publication-date watermark
 - Nitter, TwitterAPI.io, X API, and legacy RSS share the `twitter` identity namespace; RSS keeps its provider GUID while tweet status IDs deduplicate across providers
@@ -96,6 +96,8 @@ npx wrangler secret put X_API_BEARER_TOKEN
 After applying migrations, update operational rows transactionally through the Cloudflare Dashboard or a one-off `wrangler d1 execute --remote --command`, including the matching `source_routes` row. Never place real account INSERTs in migrations, seed SQL, or other Git-tracked files. Each connector carries a stable key, a handle without `@` in `config_json`, an `active/paused/archived` status, and per-account polling settings. Pausing a connector preserves its cursor and high-water.
 
 Polling cadence, page budget, and replies are stored per connector in `poll_interval_seconds` and `config_json`; combined search also stores `handles` and `overlapSeconds`. Each connector has an independent durable checkpoint. Page-budget continuations resume from `source_connector_checkpoints`.
+
+`nitter.user-timeline` reads `{baseUrl}/{userName}/rss` from each connector's `config_json`. For configured HTTPS feeds, the Nitter adapter uses a native TLS socket with response-size and timeout limits and sends a fixed, read-only HTTP/1.1 GET. It normalizes status links to `x.com` and extracts images from the description HTML. Switch providers by updating active/paused connectors; all Twitter connectors share the `twitter` identity namespace, so the same status ID is not delivered twice.
 
 `twitterapi-io.search` combines multiple handles into one [Advanced Search](https://docs.twitterapi.io/api-reference/endpoint/tweet-advanced-search) window; `twitterapi-io.user-timeline` remains for backward compatibility. `x.user-timeline` resolves and caches the X user ID once, then incrementally reads posts with `since_id`.
 

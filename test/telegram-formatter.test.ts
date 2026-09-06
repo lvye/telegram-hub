@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DeliveryDestinationConfig } from '../src/config';
 import type { DeliveryLease } from '../src/domain/delivery';
+import { renderHtmlForTelegram } from '../src/delivery/telegram-html-serializer';
 import { formatTelegramMessage } from '../src/delivery/telegram-formatter';
 
 const ARTICLE_DESTINATION: DeliveryDestinationConfig = {
@@ -95,6 +96,35 @@ describe('formatTelegramMessage', () => {
 			formattedDescription: `<b>${'正'.repeat(400)}</b>`,
 			link: null,
 		}, ARTICLE_DESTINATION)).toBe(`<b>${'正'.repeat(160)}…</b>`);
+	});
+
+	it.each([
+		{ destination: ARTICLE_DESTINATION, imageUrl: null, limit: 4_096, label: '阅读更多' },
+		{ destination: TWITTER_DESTINATION, imageUrl: null, limit: 4_096, label: '查看原文' },
+		{ destination: ARTICLE_DESTINATION, imageUrl: 'https://example.com/image.png', limit: 1_024, label: '阅读更多' },
+		{ destination: TWITTER_DESTINATION, imageUrl: 'https://example.com/image.png', limit: 1_024, label: '查看原文' },
+	])('bounds long titles and preserves the source link ($limit, $label)', ({ destination, imageUrl, limit, label }) => {
+		const message = formatTelegramMessage({
+			...DELIVERY,
+			title: '😀<&'.repeat(3_000),
+			imageUrl,
+			link: 'https://example.com/original',
+		}, destination);
+		const rendered = renderHtmlForTelegram(message, { preserveLineBreaks: true });
+
+		expect([...rendered.text]).toHaveLength(limit);
+		expect(rendered.text).toContain('…');
+		expect(message).toContain('&lt;&amp;');
+		expect(message.endsWith(`<a href="https://example.com/original">${label}</a>`)).toBe(true);
+	});
+
+	it.each(['x'.repeat(5_000), 'x\n\n'.repeat(2_000)])('bounds legacy descriptions and long multiline authors (%#)', (author) => {
+		const article = formatTelegramMessage({ ...DELIVERY, title: null, description: 'x'.repeat(5_000) }, ARTICLE_DESTINATION);
+		const tweet = formatTelegramMessage({ ...DELIVERY, author }, TWITTER_DESTINATION);
+		expect([...renderHtmlForTelegram(article, { preserveLineBreaks: true }).text].length).toBeLessThanOrEqual(4_096);
+		expect([...renderHtmlForTelegram(tweet, { preserveLineBreaks: true }).text].length).toBeLessThanOrEqual(4_096);
+		expect(article).toContain('阅读更多</a>');
+		expect(tweet).toContain('查看原文</a>');
 	});
 
 	it('drops non-http links from untrusted feed data', () => {

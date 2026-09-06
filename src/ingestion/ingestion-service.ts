@@ -9,8 +9,6 @@ import { SourceAdapterRegistry } from './source-adapter-registry';
 import { SourceIngestionLimitError } from './source-ingestion-limit-error';
 
 export interface SourceIngestionResult {
-	sourceId: string;
-	sourceKey: string;
 	discovered: number;
 	routedExisting: number;
 }
@@ -139,8 +137,6 @@ export class IngestionService {
 			}
 
 			return {
-				sourceId: source.sourceId,
-				sourceKey: source.identityNamespace,
 				discovered: items.length,
 				routedExisting,
 			};

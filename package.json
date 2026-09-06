@@ -15,7 +15,7 @@
     "deploy": "wrangler deploy",
     "deploy:dry": "wrangler deploy --dry-run --outdir .wrangler/check",
     "dev": "wrangler dev",
-    "lint": "oxlint --deny typescript/no-floating-promises src/",
+    "lint": "oxlint --type-aware --deny typescript/no-floating-promises src/",
     "test": "vitest run",
     "test:smoke": "node --test scripts/smoke-health.node.mjs",
     "test:watch": "vitest",
@@ -25,6 +25,7 @@
     "@cloudflare/vitest-pool-workers": "^0.20.3",
     "@types/node": "^26.2.0",
     "oxlint": "^1.77.0",
+    "oxlint-tsgolint": "^7.0.2001",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
     "wrangler": "^4.120.0"

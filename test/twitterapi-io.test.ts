@@ -1,27 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { AppConfig, TwitterApiIoSourceConfig } from '../src/config';
+import type { AppConfig, TwitterApiIoUserAdapterConfig } from '../src/config';
+import { TwitterApiIoUserSourceAdapter } from '../src/ingestion/twitter-api-source-adapter';
 import {
 	fetchTwitterApiIoBatch,
 	type TwitterApiIoFetchRequest,
 	TwitterApiIoError,
 } from '../src/ingestion/twitterapi-io';
 
-const SOURCE: TwitterApiIoSourceConfig = {
-	type: 'twitterapi-io',
-	sourceKey: 'TWITTER',
-	destinationKey: 'telegram:TWITTER',
-	pollEveryMinutes: 5,
+const SOURCE: TwitterApiIoUserAdapterConfig = {
 	endpoint: 'https://api.twitterapi.io/twitter/user/last_tweets',
 	apiKey: 'test-api-key',
 	userId: null,
 	userName: 'OpenAI',
 	includeReplies: false,
 	maxPages: 1,
-	fallback: {
-		url: 'https://example.com/twitter.xml',
-		parser: 'twitter',
-		identityStrategy: 'twitter-status-url',
-	},
 };
 
 const OPTIONS: AppConfig['ingestion'] = {
@@ -39,6 +31,35 @@ const OPTIONS: AppConfig['ingestion'] = {
 };
 
 describe('TwitterAPI.io client', () => {
+	it('propagates provider failures without committing a checkpoint or fetching RSS', async () => {
+		const checkpoints = {
+			getOrCreate: vi.fn(async () => ({
+				highWaterExternalId: null,
+				initializedAt: 0,
+				lastSuccessfulPollAt: null,
+				nextCursor: null,
+				pendingHighWaterExternalId: null,
+			})),
+			commit: vi.fn(async () => undefined),
+		};
+		const failure = new Error('provider unavailable');
+		const adapter = new TwitterApiIoUserSourceAdapter(checkpoints, vi.fn(async () => {
+			throw failure;
+		}));
+		const config = adapter.decodeConfig(SOURCE);
+
+		await expect(adapter.load({
+			sourceId: 'twitterapi-io:openai',
+			adapterKey: adapter.key,
+			identityNamespace: 'twitter',
+			destinationKey: 'telegram:twitter',
+			pollEveryMinutes: 5,
+			config,
+		}, { options: OPTIONS, runId: 'failed-provider', scheduledAt: 300 })).rejects.toBe(failure);
+		expect(checkpoints.commit).not.toHaveBeenCalled();
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	});
+
 	it('authenticates, selects the user, and normalizes tweets', async () => {
 		let request: Request | null = null;
 		vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {

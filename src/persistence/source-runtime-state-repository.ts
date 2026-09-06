@@ -358,15 +358,29 @@ export class SourceRuntimeStateRepository {
 		errorMessage: string,
 		now: number,
 	): Promise<boolean> {
-		return this.finishFailure(
+		const result = await this.db.prepare(`
+			UPDATE source_connector_state
+			SET
+				state = 'blocked',
+				claim_token = NULL,
+				claimed_at = NULL,
+				claim_expires_at = NULL,
+				failure_count = failure_count + 1,
+				last_error_code = ?,
+				last_error = ?,
+				updated_at = ?
+			WHERE connector_id = (
+				SELECT id FROM source_connectors WHERE connector_key = ?
+			)
+				AND state = 'running' AND claim_token = ?
+		`).bind(
+			errorCode,
+			errorMessage.slice(0, MAX_ERROR_LENGTH),
+			now,
 			sourceId,
 			leaseToken,
-			'blocked',
-			null,
-			errorCode,
-			errorMessage,
-			now,
-		);
+		).run();
+		return (result.meta.changes ?? 0) === 1;
 	}
 
 	async recoverEligibleSources(
@@ -477,67 +491,11 @@ export class SourceRuntimeStateRepository {
 		return (result.meta.changes ?? 0) === 1;
 	}
 
-	async markFailed(
-		sourceId: string,
-		leaseToken: string,
-		nextRunAt: number,
-		errorCode: string,
-		errorMessage: string,
-		now: number,
-	): Promise<boolean> {
-		return this.finishFailure(
-			sourceId,
-			leaseToken,
-			'idle',
-			nextRunAt,
-			errorCode,
-			errorMessage,
-			now,
-		);
-	}
-
 	async get(sourceId: string): Promise<SourceRuntimeState | null> {
 		const row = await this.db.prepare(`${runtimeSelect()}
 			WHERE connectors.connector_key = ?
 		`).bind(sourceId).first<RuntimeRow>();
 		return row ? mapState(row) : null;
-	}
-
-	private async finishFailure(
-		sourceId: string,
-		leaseToken: string,
-		state: 'blocked' | 'idle',
-		nextRunAt: number | null,
-		errorCode: string,
-		errorMessage: string,
-		now: number,
-	): Promise<boolean> {
-		const result = await this.db.prepare(`
-			UPDATE source_connector_state
-			SET
-				state = ?,
-				next_run_at = COALESCE(?, next_run_at),
-				claim_token = NULL,
-				claimed_at = NULL,
-				claim_expires_at = NULL,
-				failure_count = failure_count + 1,
-				last_error_code = ?,
-				last_error = ?,
-				updated_at = ?
-			WHERE connector_id = (
-				SELECT id FROM source_connectors WHERE connector_key = ?
-			)
-				AND state = 'running' AND claim_token = ?
-		`).bind(
-			state,
-			nextRunAt,
-			errorCode,
-			errorMessage.slice(0, MAX_ERROR_LENGTH),
-			now,
-			sourceId,
-			leaseToken,
-		).run();
-		return (result.meta.changes ?? 0) === 1;
 	}
 }
 

@@ -75,9 +75,25 @@ describe('D1SourceCatalog', () => {
 			config: { url: 'https://example.com/rss', parser: 'it-home', identityStrategy: 'external-id' },
 		});
 
+		await seedConnector({
+			sourceKey: 'rss:inactive-route',
+			sourceType: 'rss_feed',
+			identityNamespace: 'rss:inactive-route',
+			connectorKey: 'rss:inactive-route',
+			providerKey: 'rss',
+			adapterKey: 'rss',
+			pollSeconds: 60,
+			config: { url: 'https://example.com/rss', parser: 'it-home', identityStrategy: 'external-id' },
+		});
+		await env.DB.prepare(`
+			UPDATE source_routes SET status = 'paused'
+			WHERE source_id = (SELECT id FROM sources WHERE source_key = 'rss:inactive-route')
+		`).run();
+
 		const catalog = new D1SourceCatalog(env.DB, getConfig(env));
 		await expect(catalog.list()).resolves.toEqual([]);
 		await expect(catalog.get('rss:paused')).resolves.toBeNull();
+		await expect(catalog.get('rss:inactive-route')).resolves.toBeNull();
 	});
 
 	it('loads one connector by id without decoding unrelated connector configuration', async () => {

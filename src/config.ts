@@ -21,36 +21,17 @@ export interface RssSourceAdapterConfig {
 	identityStrategy: IdentityStrategy;
 }
 
-export interface TwitterApiIoSourceConfig {
-	type: 'twitterapi-io';
-	sourceKey: string;
-	destinationKey: string;
-	pollEveryMinutes: number;
+export interface TwitterApiIoUserAdapterConfig {
 	endpoint: string;
 	apiKey: string;
 	userId: string | null;
 	userName: string | null;
 	includeReplies: boolean;
 	maxPages: number;
-	fallback: RssSourceAdapterConfig | null;
 	providerStateKey?: string;
 	initializationAt?: number;
 	bootstrapUserName?: string;
 }
-
-export type TwitterApiIoUserAdapterConfig = Pick<
-	TwitterApiIoSourceConfig,
-	| 'apiKey'
-	| 'bootstrapUserName'
-	| 'endpoint'
-	| 'fallback'
-	| 'includeReplies'
-	| 'initializationAt'
-	| 'maxPages'
-	| 'providerStateKey'
-	| 'userId'
-	| 'userName'
->;
 
 export interface TwitterApiIoSearchAdapterConfig {
 	apiKey: string;

@@ -55,7 +55,7 @@ Worker 仅保留只读的 `GET /health` 和 `GET /health/ready`。readiness 会�
 - 批量 D1 写入控制在 Workers Free 计划单次调用的查询预算内
 - Ingestion Queue 每次只消费一个来源任务；新产生的 delivery 在 ingestion 成功后立即分发，Cron 每 5 分钟兜底扫描恢复路径，来源同步、故障恢复和 readiness 每 15 分钟错峰执行，避免全量 Catalog 解析和多 consumer 竞争入队
 - RSS 抓取携带 `If-None-Match`/`If-Modified-Since` 条件请求，feed 未变化时以 304 短路，跳过下载、解析与身份查询
-- `@cloudflare/vitest-pool-workers` 在真实 workerd 环境中测试 D1、Cron 和 Queue
+- `@cloudflare/vitest-plugin` 在真实 workerd 环境中测试 D1、Cron 和 Queue
 
 ## 项目结构
 

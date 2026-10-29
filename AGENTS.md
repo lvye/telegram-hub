@@ -34,7 +34,7 @@ Repository guidance for Telegram Hub, a TypeScript ES module Worker on Cloudflar
 
 ## Commands and validation
 
-Use npm and the committed lockfile. CI uses Node.js 22. `package.json` owns commands; `.prettierrc` defines formatting (tabs, single quotes, semicolons), and TypeScript is strict.
+Use npm and the committed lockfile. CI uses Node.js 26.13.0. `package.json` owns commands; `.prettierrc` defines formatting (tabs, single quotes, semicolons), and TypeScript is strict.
 
 | Need | Command |
 | --- | --- |
